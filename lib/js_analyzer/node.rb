@@ -1,0 +1,21 @@
+class JSAnalyzer::Node
+end
+
+require "js_analyzer/nodes/array"
+require "js_analyzer/nodes/binary_operator"
+require "js_analyzer/nodes/boolean"
+require "js_analyzer/nodes/class"
+require "js_analyzer/nodes/export_default_statment"
+require "js_analyzer/nodes/export_statement"
+require "js_analyzer/nodes/if"
+require "js_analyzer/nodes/method"
+require "js_analyzer/nodes/number"
+require "js_analyzer/nodes/object"
+require "js_analyzer/nodes/return_statement"
+require "js_analyzer/nodes/scope"
+require "js_analyzer/nodes/spread_entry"
+require "js_analyzer/nodes/statement"
+require "js_analyzer/nodes/string"
+require "js_analyzer/nodes/unary_operator"
+require "js_analyzer/nodes/variable_declaration"
+require "js_analyzer/nodes/variable_reference"
