@@ -1,27 +1,41 @@
 class JSAnalyzer::Node::VariableDeclaration
   
-  attr_accessor :initialization, :name
+  attr_accessor :type, :vars
 
-  def initialize(type)
+  def initialize(type, destructure: false)
     @type = type
     @vars = []
+    @destructure = destructure
   end
   
   def add(name, init=nil)
     @vars << [name, init]
   end
   
-  def to_js
+  def to_js(indentation="", encapsulate: false)
     case @type
-    when 'import', 'destructure', 'class'
-      @vars[0][0]
+    when 'import', 'destructure', 'class', 'argument'
+      indentation + @vars[0][0]
     else
-      js = "#{@type} "
+      js = "#{indentation}#{@type} "
       js << @vars.map do |var|
-        var[1] ? "#{var[0]} = #{var[1].to_js}" : var[0]
+        if var[1]
+          varjs = "#{var[0]} = "
+          varjs << "(" if encapsulate
+          varjs << var[1].to_js
+          varjs << ")" if encapsulate
+          varjs
+        else
+          var[0]
+        end
+        
       end.join(', ')
+
       js
     end
   end
   
+  def contains
+    @vars.find { |v| v[1] ? yield(v[1]) : false }
+  end
 end

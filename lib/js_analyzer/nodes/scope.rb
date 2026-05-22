@@ -13,42 +13,18 @@ class JSAnalyzer::Node::Scope
     @references[name] ||= JSAnalyzer::Node::VariableReference.new(name, self)
   end
   
-  def declare(type, name = nil, init = nil)
-    @declarations[name] = JSAnalyzer::Node::VariableDeclaration.new(type)
+  def declare(type, name = nil, init = nil, destructure: false)
+    @declarations[name] = JSAnalyzer::Node::VariableDeclaration.new(type, destructure: destructure)
     @declarations[name].add(name, init) if name
     @declarations[name]
+  end
+  
+  def <<(statement)
+    @statements << statement if statement
   end
 
   # def lookup(name)
   #   @variables[name] || @parent_scope&.lookup(name)
-  # end
-
-end
-
-class JSAnalyzer::Node::GlobalVariable
-
-  attr_reader :name
-
-  def initialize(name)
-    @name = name
-  end
-end
-
-class JSAnalyzer::Node::Program < JSAnalyzer::Node::Scope
-
-  def initialize(...)
-    super
-    @globals = {}
-  end
-
-  # def lookup(name)
-  #   if @variables[name]
-  #     @variables[name]
-  #   elsif @globals[name]
-  #     @globals[name]
-  #   else
-  #     @globals[name] = JSAnalyzer::Node::GlobalVariable.new(name)
-  #   end
   # end
 
 end

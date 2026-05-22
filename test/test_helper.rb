@@ -31,4 +31,10 @@ class Minitest::Test
       end
     end
   end
+  
+  def assert_parse(input, output)
+    assert_equal output.rstrip, JSAnalyzer.parse(input).to_js.rstrip
+  end
+  
+
 end

@@ -22,12 +22,11 @@ class JSAnalyzer::Node::Object
   end
   
   def add(key, value)
-    puts 'ADD ' + key.inspect
     @entries << JSAnalyzer::Node::Object::Entry.new(key, value)
   end
   
   def spread(variable)
-    @entries << JSAnalyzer::Node::SpreadEntry.new(variable)
+    @entries << JSAnalyzer::Node::SpreadOperator.new(variable)
   end
   
   def shorthand(variable)
@@ -38,8 +37,8 @@ class JSAnalyzer::Node::Object
     js = String.new("{")
     js << @entries.map do |entry|
       case entry
-      when JSAnalyzer::Node::SpreadEntry
-        "...#{entry.variable.to_js}"
+      # when JSAnalyzer::Node::SpreadOperator
+      #   "...#{entry.variable.to_js}"
       when ShorthandEntry
         entry.key.to_js
       when Entry
@@ -47,7 +46,6 @@ class JSAnalyzer::Node::Object
         when String
           "#{entry.key}: #{entry.value.to_js}"
         else
-        puts entry.value.inspect
           "[#{entry.key.to_js}]: #{entry.value.to_js}"
         end
       else

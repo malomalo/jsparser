@@ -5,8 +5,8 @@ class JSAnalyzer::Node::VariableReference
     @name = name
   end
   
-  def to_js
-    @name
+  def to_js(indentation="")
+    @name.dup
   end
   
 end

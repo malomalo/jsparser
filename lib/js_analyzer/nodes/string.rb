@@ -5,7 +5,31 @@ class JSAnalyzer::Node::String
     @quote = quotes
   end
 
-  def to_js
+  def to_js(indentation="")
     "#{@quote}#{@value}#{@quote}"
+  end
+end
+
+class JSAnalyzer::Node::InterpolatedString
+
+  def initialize(parts=[])
+    @parts = parts
+  end
+
+  def <<(part)
+    @parts << part
+  end
+  
+  def to_js(indentation="")
+    js = String.new('`')
+    @parts.each do |part|
+      if part.is_a?(String)
+        js << part
+      else
+      puts part.inspect
+        js << "${" << part.to_js << "}"
+      end
+    end
+    js << '`'
   end
 end

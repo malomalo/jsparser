@@ -6,7 +6,7 @@ class JSAnalyzer::Node::Number
     @value = value
   end
 
-  def to_js
+  def to_js(indentation="")
     @value
   end
 end

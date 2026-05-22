@@ -1,9 +1,8 @@
-class JSAnalyzer::Node::SpreadEntry
-
-  attr_reader :variable
+class JSAnalyzer::Node::SpreadOperator < JSAnalyzer::Node::Operator
 
   def initialize(variable=nil)
     @variable = variable
+    @precedence = 2
   end
 
   def to_js

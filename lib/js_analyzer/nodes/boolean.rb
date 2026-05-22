@@ -6,7 +6,7 @@ class JSAnalyzer::Node::Boolean
     @value = value
   end
   
-  def to_js
+  def to_js(indentation="")
     @value.to_s
   end
   

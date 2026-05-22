@@ -15,17 +15,19 @@ class JSAnalyzer::Node::If
     @elses << body
   end
     
-  def to_js
-    js = "if (#{condition.inspect}) {"
-    js << body.map(&:inspect).join("\n")
-    js << "\n}"
+  def to_js(indentation="")
+    js = "#{indentation}if (#{condition.inspect}) {\n"
+    body.each do |part|
+      js << part.to_js(indentation + "    ") << "\n"
+    end
+    js << "#{indentation}}"
     @elses.each do |els|
       if els.is_a?(JSAnalyzer::Node::If)
-        js << "else #{els.inspect}"
+        js << "#{indentation}else #{els.inspect}"
       else
-        js << "else {\n"
+        js << "#{indentation}else {\n"
         js << els.map(&:inspect).join("\n")
-        js << "}"
+        js << "#{indentation}}"
       end
     end
     js

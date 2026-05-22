@@ -9,8 +9,8 @@ class JSAnalyzer::Node::BinaryOperator
     @spacing = spacing
   end
   
-  def to_js
-    if spacing.nil? || spacing == 0
+  def to_js(indentation="")
+    if @spacing.nil? || @spacing == 0
       "#{left.to_js}#{operation}#{right.to_js}"
     else
       "#{left.to_js} #{operation} #{right.to_js}"
