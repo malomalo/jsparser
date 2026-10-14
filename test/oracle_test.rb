@@ -9,7 +9,11 @@ class JSParser::OracleTest < Minitest::Test
   FIXTURES = File.expand_path('oracle/fixtures', __dir__)
 
   test 'fixtures match acorn' do
-    skip "needs node and acorn (npm install in test/oracle)" unless JSParser::Oracle.available?
+    unless JSParser::Oracle.available?
+      # CI sets REQUIRE_ORACLE so a missing install fails instead of passing
+      flunk "node and acorn aren't installed (npm install in test/oracle)" if ENV['REQUIRE_ORACLE']
+      skip "needs node and acorn (npm install in test/oracle)"
+    end
 
     files = Dir.glob(File.join(FIXTURES, '**', '*.js')).sort
     failures = JSParser::Oracle.results(files).reject { it['status'] == 'ok' }
