@@ -132,10 +132,21 @@ class JSParser::RealWorldTest < Minitest::Test
   end
 
   test 'import assertions are no longer supported' do
+    # Like any two statements on one line without a `;`
     error = assert_raises(JSParser::SyntaxError) { JSParser.parse('import j from "./a.json" assert { type: "json" }') }
-    assert_match(/use `with/, error.message)
+    assert_match(/unexpected "assert"/, error.message)
     # On the next line, `assert` is just the start of another statement
     assert_parse("import j from './a.json'\nassert(j)", "import j from './a.json';\nassert(j);")
+  end
+
+  test 'statements on one line need a semicolon between them' do
+    ['a b', 'x = 1 y = 2', 'f() g()'].each do |source|
+      assert_raises(JSParser::SyntaxError, source) { JSParser.parse(source) }
+    end
+    assert_parse("a\nb", "a;\nb;")
+    assert_parse("a; b", "a;\nb;")
+    assert_parse("if (a) {} b()", "if (a) { };\nb();")
+    assert_parse("do x(); while (y) z()", "do {\n    x();\n} while (y);\nz();")
   end
 
   test 'a line starting with ( or [ continues the one before' do

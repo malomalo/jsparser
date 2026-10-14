@@ -157,9 +157,23 @@ class JSParser::Parser
 
       st = statement_list_item
       statements << st if st
-      raise syntax_error("unexpected #{token.value.inspect}", token) if peek(regex: true).start == token.start
+      following = peek(regex: true)
+      raise syntax_error("unexpected #{token.value.inspect}", token) if following.start == token.start
+      raise syntax_error("unexpected #{following.value.inspect}", following) unless statement_separated?(st, following)
     end
     statements
+  end
+
+  # Whether the statement just parsed is properly separated from `following`:
+  # it ended with `;` or `}`, or `following` starts a new line or ends the
+  # list. Two statements on one line need a `;` between them (automatic
+  # semicolon insertion only applies at a line break), except after
+  # `do ... while (x)`.
+  def statement_separated?(statement, following)
+    last = @tokens.last
+    last.nil? || last.punctuator?(';') || last.punctuator?('}') ||
+      following.newline_before || following.punctuator?('}') || following.eof? ||
+      statement.is_a?(JSParser::Node::DoWhile)
   end
 
   # Adds the comments before `token` to a statement list or class body. A
@@ -675,13 +689,6 @@ class JSParser::Parser
   # `with { type: "json" }` after the module specifier of an import or export.
   # Returns [keyword, object] or nil.
   def parse_import_attributes
-    token = peek
-    if token.name?('assert') && !token.newline_before
-      # Import assertions were replaced by import attributes and are no
-      # longer JavaScript (acorn and Babel 8 reject them)
-      raise syntax_error("import assertions (`assert { ... }`) aren't supported; use `with { ... }`")
-    end
-
     return unless (keyword = accept_name('with'))
     expect('{')
     [keyword.value, parse_object]
