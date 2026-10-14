@@ -39,6 +39,7 @@ class JSAnalyzer::Parser
   # Binding power of binary operators, higher binds tighter. See
   # https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Operator_precedence
   PRECEDENCE = {
+    ',' => 1, # comma operator
     **ASSIGNMENT_OPERATORS.to_h { [it, 2] },
     '?' => 3, # ternary
     '||' => 4, '??' => 4,
@@ -93,7 +94,7 @@ class JSAnalyzer::Parser
         gobble!(/\p{Space}*\]\p{Space}*/)
         case gobble(/\p{Space}*(\:|\()\p{Space}*/)&.[](1)
         when ':'
-          obj.add(key, statement)
+          obj.add(key, expression)
           gobble(/\p{Space}*,/)
         when '('
           obj.shorthand(parse_function(key, false, false, :class))
@@ -105,7 +106,7 @@ class JSAnalyzer::Parser
       when '"', "'"
         key = quoted_value(match)
         return parse_scope([key]) unless gobble(/\p{Space}*:\p{Space}*/)
-        obj.add(key, statement)
+        obj.add(key, expression)
         gobble(/\p{Space}*,/)
       when "class"
         return JSAnalyzer::Node::Class.parse(self)
@@ -149,7 +150,7 @@ class JSAnalyzer::Parser
       when NUMBER_TOKEN
         key = match
         return parse_scope([key]) unless gobble(/\p{Space}*:\p{Space}*/)
-        obj.add(key, statement)
+        obj.add(key, expression)
         gobble(/\p{Space}*,/)
       when IDENTIFIER
         key = match
@@ -162,7 +163,7 @@ class JSAnalyzer::Parser
           obj.add(key, parse_function(key, false, false, :class))
           gobble(/\p{Space}*,/)
         else
-          obj.add(key, statement)
+          obj.add(key, expression)
           gobble(/\p{Space}*,/)
         end
 
@@ -198,15 +199,21 @@ class JSAnalyzer::Parser
   def parse_function_body(fn, brackets = true)
     begin
       @scope = fn.scope
-      while st = statement
-        fn.body << st
-        break if !brackets
+      if brackets
+        while st = statement
+          fn.body << st
+        end
+      else
+        # Arrow function with an expression body
+        fn.expression_body = true
+        fn.body << expression
       end
     ensure
       @scope = fn.scope.parent_scope
     end
     gobble!(/\p{Space}*\}/) if brackets
-    gobble!(/\p{Space}*;?/)
+    # An arrow function is an expression; the statement it's in ends it
+    gobble!(/\p{Space}*;?/) unless fn.type == :arrow
   end
   
   def parse_scope(statements=[])
@@ -218,9 +225,9 @@ class JSAnalyzer::Parser
   
   def parse_array
     array = JSAnalyzer::Node::Array.new
-    array.members << statement
+    array.members << expression
     while gobble(/\p{Space}*\,/)
-      array.members << statement
+      array.members << expression
     end
     gobble!(/\p{Space}*\]/)
     array
@@ -317,7 +324,7 @@ class JSAnalyzer::Parser
   
   def parse_args
     args = []
-    while nibble = statement
+    while nibble = expression
       args << nibble
       gobble(/\p{Space}*,/)
     end
@@ -370,6 +377,12 @@ class JSAnalyzer::Parser
     true
   end
 
+  # A single expression that stops at a `,`, for argument lists, array items,
+  # initializers, etc.
+  def expression
+    statement(min_prec: PRECEDENCE['='])
+  end
+
   # no_in:    stop before an `in` operator (the first clause of a for loop)
   # min_prec: stop before any operator that binds looser than this (see
   #           PRECEDENCE), or a `;`; used to parse operands
@@ -406,9 +419,22 @@ class JSAnalyzer::Parser
           return parse_class
         
         when "new"
-          what = @scope.var(gobble!(/\p{Space}*(#{IDENTIFIER})/)[1])
-          gobble!(/\p{Space}*\(/)
-          stack << JSAnalyzer::Node::Instantiation.new(what, parse_args)
+          # new Callee(args), where Callee is a member expression and the
+          # argument list is optional
+          what = if gobble(/\p{Space}*\(/)
+            JSAnalyzer::Node::Group.new(parse_args)
+          else
+            @scope.var(gobble!(/\p{Space}*(#{IDENTIFIER})/)[1])
+          end
+          while gob = gobble(/\p{Space}*(\.|\[)/)&.[](1)
+            what = if gob == "."
+              JSAnalyzer::Node::DotAccessor.new(object: what, key: gobble!(/\p{Space}*(#{IDENTIFIER})/)[1])
+            else
+              JSAnalyzer::Node::BracketAccessor.new(what, statement).tap { gobble!(/\p{Space}*\]/) }
+            end
+          end
+          args = gobble(/\p{Space}*\(/) ? parse_args : []
+          stack << JSAnalyzer::Node::Instantiation.new(what, args)
         when "..."
           var = gobble(/\p{Space}*(#{IDENTIFIER})/)&.[](1)
           return JSAnalyzer::Node::SpreadOperator.new(var ? @scope.var(var) : nil)
@@ -420,6 +446,12 @@ class JSAnalyzer::Parser
             stack << parse_object
           end
         when "("
+          if stack.last.is_a?(JSAnalyzer::Node::Method) && stack.last.type == :arrow
+            # An arrow function can't be called without parens around it
+            rewind(1)
+            return stack.pop
+          end
+
           case stack.last
           when JSAnalyzer::Node::Method, JSAnalyzer::Node::VariableReference,
                JSAnalyzer::Node::DotAccessor, JSAnalyzer::Node::BracketAccessor,
@@ -525,7 +557,13 @@ class JSAnalyzer::Parser
         when '=>'
           fn = JSAnalyzer::Node::Method.new(args: stack.pop, scope: @scope, type: :arrow)
           parse_function_body(fn, !!gobble(/\p{Space}*\{/))
-          return fn
+          stack << fn
+        when ","
+          # Comma operator, or the end of an item in a list
+          if stack.empty? || !binary_operator(stack, ",", min_prec, no_in)
+            rewind(1)
+            return stack.pop
+          end
         when *PRECEDENCE.keys
           # Binary operator, including assignment
           m = match
@@ -561,7 +599,7 @@ class JSAnalyzer::Parser
           when "{"
             d = JSAnalyzer::Node::DestructureObject.new(type)
             while gob = gobble(/\p{Space}*(#{JSAnalyzer::Parser::IDENTIFIER})\p{Space}*/)
-              d.add(@scope.declare('destructure', gob[1]), gobble(/:\p{Space}*/) ? statement : nil)
+              d.add(@scope.declare('destructure', gob[1]), gobble(/:\p{Space}*/) ? expression : nil)
               gobble(/\p{Space}*,/)
             end
             gobble!(/\p{Space}*\}/)
@@ -576,7 +614,7 @@ class JSAnalyzer::Parser
           when "["
             d = JSAnalyzer::Node::DestructureArray.new(type)
             while gob = gobble(/\p{Space}*(#{JSAnalyzer::Parser::IDENTIFIER})\p{Space}*/)
-              d.add(@scope.declare('destructure', gob[1]), gobble(/=\p{Space}*/) ? statement : nil)
+              d.add(@scope.declare('destructure', gob[1]), gobble(/=\p{Space}*/) ? expression : nil)
               gobble(/\p{Space}*,/)
             end
             gobble!(/\p{Space}*\]/)
@@ -591,7 +629,7 @@ class JSAnalyzer::Parser
           else
             declaration = @scope.declare(type)
             stack << declaration
-            initialization = statement if gobble(/\p{Space}*=/)
+            initialization = expression if gobble(/\p{Space}*=/)
             declaration.add(name, initialization)
 
             while gob = gobble(/\p{Space}*(,|\[|\{|\/\/|\/\*)/)&.[](1)
@@ -602,7 +640,7 @@ class JSAnalyzer::Parser
                 scan_until_eol
               when ","
                 name = gobble!(/\p{Space}*(#{IDENTIFIER})/)[1]
-                init = statement if gobble(/\p{Space}*=/)
+                init = expression if gobble(/\p{Space}*=/)
                 declaration.add(name, init)
               end
             end

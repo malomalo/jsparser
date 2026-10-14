@@ -1,7 +1,10 @@
 class JSAnalyzer::Node::Method
 
   attr_accessor :args, :body, :scope, :type, :async
-  
+
+  # True for an arrow function whose body is an expression, not a `{ }` block
+  attr_accessor :expression_body
+
   def initialize(scope:, name: nil, async: false, generator: false, type: :function, args: [])
     @name = name
     @async = async
@@ -27,8 +30,7 @@ class JSAnalyzer::Node::Method
     end
     js << "(" << @args.map(&:to_js).join(', ') << ") "
     js << "=> " if @type == :arrow
-    # js << "{\n" if @type != :arrow || @body.size != 1
-    if @type == :arrow && @body.size == 1
+    if @type == :arrow && @expression_body
       js << @body.first.to_js
     else
       js << "{"

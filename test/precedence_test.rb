@@ -41,8 +41,26 @@ class JSAnalyzer::PrecedenceTest < Minitest::Test
     assert_parse('f(a, b + c, d)', 'f(a, b + c, d);')
   end
 
+  test 'comma operator' do
+    assert_tree('a, b', '(a , b)')
+    assert_tree('a = 1, b = 2', '((a = 1) , (b = 2))')
+    assert_parse('x = (a, b)', 'x = (a, b);')
+    assert_parse('for (i = 0, j = 10; i < j; i++, j--) x();', <<~JS)
+        for (i = 0, j = 10; i < j; i++, j--) {
+            x();
+        };
+    JS
+  end
+
+  test 'commas separate list items' do
+    assert_parse('let a = 1, b = [1, 2], c = {k: 1, j: 2};', 'let a = 1, b = [1, 2], c = {k: 1, j: 2};')
+    assert_parse('f(a, (b, c))', 'f(a, (b, c));')
+    assert_parse('f(x => x * 2, 3)', 'f((x) => x * 2, 3);')
+    assert_tree('y => y + 1, z', '((y) => y + 1 , z)')
+  end
+
   test 'a stray token raises instead of hanging' do
-    assert_raises(RuntimeError) { JSAnalyzer.parse('a, b') }
+    assert_raises(RuntimeError) { JSAnalyzer.parse('a )') }
   end
 
 end

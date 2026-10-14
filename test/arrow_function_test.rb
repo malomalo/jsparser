@@ -61,7 +61,9 @@ class JSAnalyzer::ArrowFunctionTest < Minitest::Test
     JS
     
     assert_parse(input, <<~JS)
-        (param) => statements;
+        (param) => {
+            statements;
+        };
     JS
   end
  
