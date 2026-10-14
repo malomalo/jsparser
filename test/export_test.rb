@@ -81,4 +81,11 @@ class JSParser::ExportTest < Minitest::Test
     JS
   end
 
+  test 'export needs a declaration, list, * or default' do
+    ['export v from "m"', 'export v', 'export const a = 1 from "m"'].each do |source|
+      assert_raises(JSParser::SyntaxError, source) { JSParser.parse(source, source_type: :module) }
+    end
+    assert_parse('export async function f() {}', 'export async function f() { };')
+  end
+
 end

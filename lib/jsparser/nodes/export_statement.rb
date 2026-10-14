@@ -121,6 +121,9 @@ class JSParser::Node::ExportStatement
 
   public
 
+  # What can follow `export` as a declaration
+  DECLARATIONS = %w(var let const function async class).freeze
+
   # After `export`
   def self.parse(parser)
     xport = JSParser::Node::ExportStatement.new
@@ -163,12 +166,16 @@ class JSParser::Node::ExportStatement
         glob << (as ? As.new(exported, as) : exported)
       end
       xport.export(glob)
-    else # const, let, var, function, class
+    elsif token.name_in?(DECLARATIONS)
       parser.unread(token)
       xport.export(parser.statement(top: true))
+    else
+      # e.g. `export v from "m"`, a proposal that isn't JavaScript
+      raise parser.syntax_error("expected a declaration, `{`, `*` or `default` after export", token)
     end
 
-    if parser.accept_name('from')
+    # Only `export *` and `export { ... }` can re-export from a module
+    if (token.punctuator?('*') || token.punctuator?('{')) && parser.accept_name('from')
       xport.from(parser.expect_string)
       xport.attributes = parser.parse_import_attributes
     end
