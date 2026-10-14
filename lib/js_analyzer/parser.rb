@@ -789,7 +789,7 @@ class JSAnalyzer::Parser
       elsif accept('[')
         key = statement
         expect(']')
-        JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: key, optional_chaining: true)
+        JSAnalyzer::Node::BracketAccessor.new(stack.pop, key, optional_chaining: true)
       else
         JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: member_name, optional_chaining: true)
       end
