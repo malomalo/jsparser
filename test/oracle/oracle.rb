@@ -29,25 +29,34 @@ module JSParser::Oracle
     files = Dir.glob(File.join(File.expand_path(folder), "**", "*.{js,mjs,cjs}")).sort
     files.reject! { it.end_with?(".min.js") } unless ENV['MIN']
     files = files.first(Integer(ENV['LIMIT'])) if ENV['LIMIT']
-    timeout = Float(ENV.fetch('TIMEOUT', 5))
     puts "Checking #{files.size} files in #{folder}"
 
-    results = Dir.mktmpdir("jsparser-oracle") do |tmp|
+    results = results(files, timeout: Float(ENV.fetch('TIMEOUT', 5)), progress: $stdout.tty?)
+    report(results)
+    exit 1 if results.any? { !%w(ok original_invalid).include?(it["status"]) }
+  end
+
+  # Checks each file, returning [{ "source", "status", "detail" }] (see
+  # compare.mjs for the statuses)
+  def self.results(files, timeout: 5, progress: false)
+    Dir.mktmpdir("jsparser-oracle") do |tmp|
       manifest = files.each_with_index.map do |file, i|
-        print_progress(i, files.size)
+        print_progress(i, files.size) if progress
         check(file, File.join(tmp, "#{i}#{File.extname(file)}"), timeout)
       end
-      puts if $stdout.tty?
+      puts if progress
 
       path = File.join(tmp, "manifest.json")
       File.write(path, JSON.generate(manifest))
       out, err, status = Open3.capture3("node", File.join(DIR, "compare.mjs"), path)
-      abort "compare.mjs failed:\n#{err}" unless status.success?
+      raise "compare.mjs failed:\n#{err}" unless status.success?
       JSON.parse(out)
     end
+  end
 
-    report(results)
-    exit 1 if results.any? { !%w(ok original_invalid).include?(it["status"]) }
+  # Whether node and acorn are installed, so the oracle can run
+  def self.available?
+    File.directory?(File.join(DIR, "node_modules", "acorn")) && system("node", "--version", out: File::NULL, err: File::NULL)
   end
 
   # Parses and prints file, writing the output to output_path
