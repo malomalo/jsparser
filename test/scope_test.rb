@@ -302,4 +302,16 @@ class JSParser::ScopeTest < Minitest::Test
     assert_empty declarations(program, 'a-b')
   end
 
+  test 're-exported names are not variables here' do
+    program = JSParser.parse('const b = 1; export { b, b as c }; export { a, x as y, default } from "m";', source_type: :module)
+
+    assert_empty program.variables.select(&:implicit?), "a, x and default aren't globals"
+    assert_equal 2, declaration(program, 'b').references.size
+  end
+
+  test 'a quoted name can only be re-exported' do
+    assert_parse('export { "a-b" as c } from "m";', 'export { "a-b" as c } from "m";')
+    assert_raises(JSParser::SyntaxError) { JSParser.parse('export { "a-b" };') }
+  end
+
 end

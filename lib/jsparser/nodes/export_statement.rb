@@ -82,20 +82,33 @@ class JSParser::Node::ExportStatement
     elsif token.name?('default')
       xport.export(Default.new(parser.statement))
     elsif token.punctuator?('{')
-      glob = Glob.new
+      entries = [] # [name token, `as` name or nil]
       loop do
         break if parser.accept('}')
-        name = parser.expect_name
-        var = parser.scope.var(name.value, range: name.range)
-        glob << if parser.accept_name('as')
-          as = parser.advance
-          As.new(var, as.type == :string ? parser.string_node(as) : as.value)
-        else
-          var
-        end
+        name = parser.advance
+        raise parser.syntax_error("expected a name", name) unless name.name? || name.type == :string
+        as = (as_token = parser.accept_name('as') && parser.advance) &&
+             (as_token.type == :string ? parser.string_node(as_token) : as_token.value)
+        entries << [name, as]
         next if parser.accept(',')
         parser.expect('}')
         break
+      end
+
+      # In `export { a } from "m"` the names are the other module's, not
+      # variables here
+      re_export = parser.peek.name?('from')
+      glob = Glob.new
+      entries.each do |name, as|
+        exported = if name.type == :string
+          raise parser.syntax_error("a quoted name can only be re-exported", name) unless re_export
+          parser.string_node(name)
+        elsif re_export
+          JSParser::Node::Identifier.new(name.value)
+        else
+          parser.scope.var(name.value, range: name.range)
+        end
+        glob << (as ? As.new(exported, as) : exported)
       end
       xport.export(glob)
     else # const, let, var, function, class
