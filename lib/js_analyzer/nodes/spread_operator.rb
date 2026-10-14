@@ -1,10 +1,10 @@
-class JSAnalyzer::Node::SpreadOperator < JSAnalyzer::Node::Operator
+# `...value`, as a spread in calls, arrays and objects or a rest element
+class JSAnalyzer::Node::SpreadOperator
 
   attr_accessor :variable
 
   def initialize(variable=nil)
     @variable = variable
-    @precedence = 2
   end
 
   def to_js(indentation="")
