@@ -168,4 +168,23 @@ class JSAnalyzer::ScopeTest < Minitest::Test
     assert_equal :function, declaration(program, 'arguments').scope.kind
   end
 
+  test 'ranges are byte offsets and locations count characters' do
+    source = "const café = 'naïve ✓';\nlet x = café;"
+    program = JSAnalyzer.parse(source)
+    cafe = program.declarations['café']
+    x = program.declarations['x']
+
+    assert_equal 'café', source.byteslice(cafe.range)
+    assert_equal [1, 7], cafe.location
+    assert_equal 'x', source.byteslice(x.range)
+    assert_equal [2, 5], x.location
+    assert_equal [2, 9], cafe.references.first.location
+    assert_equal "const café = 'naïve ✓';\nlet x = café;\n", program.to_js
+  end
+
+  test 'syntax errors point at the right column after multibyte characters' do
+    error = assert_raises(JSAnalyzer::SyntaxError) { JSAnalyzer.parse("x = 'ü✓' )") }
+    assert_match(/at 1:10/, error.message)
+  end
+
 end

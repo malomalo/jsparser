@@ -7,10 +7,11 @@ class JSAnalyzer::Node::Program < JSAnalyzer::Node::Scope
     super(kind: :program, **options)
   end
 
-  # [line, column], 1-based, of a character offset in the source
+  # [line, column], 1-based, of a byte offset in the source. The column
+  # counts characters.
   def location(offset)
-    before = @source[0...offset]
-    [before.count("\n") + 1, offset - (before.rindex("\n") || -1)]
+    before = @source.byteslice(0, offset)
+    [before.count("\n") + 1, before.size - (before.rindex("\n") || -1)]
   end
 
   def to_js(indentation="")

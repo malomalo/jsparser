@@ -6,7 +6,7 @@
 #               "global" (and "arguments" inside a function)
 #   identifier  the name, shared with every reference (see Identifier)
 #   text        the name as written in the source
-#   range       where it is in the source, as character offsets
+#   range       where it is in the source, as byte offsets (source.byteslice(range) is the text)
 #   scope       the Scope it's declared in
 #   references  every VariableReference that resolves to it
 class JSAnalyzer::Node::VariableDeclaration

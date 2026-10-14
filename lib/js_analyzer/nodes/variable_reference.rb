@@ -3,7 +3,7 @@
 # variable is never declared).
 #
 #   text   the name as written in the source
-#   range  where it is in the source, as character offsets
+#   range  where it is in the source, as byte offsets (source.byteslice(range) is the text)
 #   scope  the Scope it appears in
 class JSAnalyzer::Node::VariableReference
 

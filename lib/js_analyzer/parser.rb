@@ -10,12 +10,16 @@ class JSAnalyzer::Parser
     match
   end
   
+  # Positions (@index, and the ranges on declarations and references) are
+  # byte offsets into the source, as in StreamParser, so matching never has
+  # to count characters from the start of the source.
+
   def peek(n=1)
     if n.is_a?(Regexp)
       skip_comments if skips_comments?(n)
-      @source.match(anchored(n), @index)
+      @source.byteindex(anchored(n), @index) && $~
     else
-      @source.slice(@index, n)
+      super
     end
   end
 
@@ -26,12 +30,12 @@ class JSAnalyzer::Parser
   def gobble(r)
     r = LITERAL[r] if r.is_a?(::String)
     skip_comments if skips_comments?(r)
-    m = @source.match(anchored(r), @index)
-    return unless m
+    return unless @source.byteindex(anchored(r), @index)
 
+    m = $~
     @match = m.to_s
     @old_index = @index
-    @index += @match.size
+    @index = m.byteend(0)
     m
   end
 
@@ -42,13 +46,33 @@ class JSAnalyzer::Parser
 
   # Comments can appear anywhere whitespace can, so patterns that allow
   # leading whitespace skip comments too
+  SKIPS_COMMENTS = {}.compare_by_identity
+
   def skips_comments?(r)
-    r.source.start_with?('\p{Space}')
+    SKIPS_COMMENTS.fetch(r) { SKIPS_COMMENTS[r] = r.source.start_with?('\p{Space}') }
   end
 
+  # The first byte of whitespace or a comment
+  COMMENT_START_BYTES = [9, 10, 11, 12, 13, 32, '/'.ord].freeze
+
   def skip_comments
-    while (m = @source.match(COMMENT, @index))
-      @index += m[0].size
+    # Most of the time the next character is neither, so don't run the regex
+    while COMMENT_START_BYTES.include?(@source.getbyte(@index)) && @source.byteindex(COMMENT, @index)
+      @index = $~.byteend(0)
+    end
+  end
+
+  # Moves back `by` characters. StreamParser's rewind copies and counts the
+  # source before the current position, which costs the length of the
+  # source in non-ASCII text; this steps back over UTF-8 continuation bytes
+  # instead.
+  # TODO: move this into StreamParser
+  def rewind(by = 1)
+    return super unless @source.encoding == Encoding::UTF_8
+
+    by.times do
+      @index -= 1
+      @index -= 1 while @index > 0 && (@source.getbyte(@index) & 0b1100_0000) == 0b1000_0000
     end
   end
 
@@ -81,17 +105,17 @@ class JSAnalyzer::Parser
   # A JSAnalyzer::SyntaxError for the current position, with the line and
   # column and the source around it
   def syntax_error(message)
-    index = [@index, @source.size].min
-    line_start = index.zero? ? 0 : (@source.rindex("\n", index - 1) || -1) + 1
-    line_end = @source.index("\n", index) || @source.size
-    line = @source[0...index].count("\n") + 1
-    column = index - line_start + 1
+    before = @source.byteslice(0, [@index, @source.bytesize].min)
+    after = @source.byteslice(before.bytesize..)
+    line = before.count("\n") + 1
+    line_before = before[((before.rindex("\n") || -1) + 1)..]
+    line_after = after[/\A[^\n]*/]
+    column = line_before.size + 1
 
     # Show at most 80 characters either side, so minified files stay readable
-    from = [index - 80, line_start].max
-    snippet = @source[from...[index + 80, line_end].min]
+    shown_before = line_before[-80..] || line_before
     JSAnalyzer::SyntaxError.new(
-      "#{message} at #{line}:#{column}\n  #{snippet}\n  #{' ' * (index - from)}^"
+      "#{message} at #{line}:#{column}\n  #{shown_before}#{line_after[0, 80]}\n  #{' ' * shown_before.size}^"
     )
   end
 
@@ -147,7 +171,7 @@ class JSAnalyzer::Parser
 
     parse_statement_list.each { @scope << it }
     gobble(WHITESPACE)
-    raise syntax_error("unexpected #{@source[@index].inspect}") unless eos?
+    raise syntax_error("unexpected #{peek(1).inspect}") unless eos?
 
     @scope.source = @source
     @scope.close!
@@ -164,7 +188,7 @@ class JSAnalyzer::Parser
       start = @index
       st = statement_list_item
       statements << st if st
-      raise syntax_error("unexpected #{@source[@index].inspect}") if @index == start
+      raise syntax_error("unexpected #{peek(1).inspect}") if @index == start
     end
     statements
   end
@@ -209,7 +233,7 @@ class JSAnalyzer::Parser
 
   # The source range of a match's group
   def group_range(match_data, group = 1)
-    match_data.begin(group)...match_data.end(group)
+    match_data.bytebegin(group)...match_data.byteend(group)
   end
 
   # Arrow function parameters, which are parsed as an expression until the
@@ -408,7 +432,7 @@ class JSAnalyzer::Parser
         end
         fn.args << (rest ? JSAnalyzer::Node::SpreadOperator.new(param) : param)
         gobble(/\p{Space}*,/)
-        raise syntax_error("unexpected #{@source[@index].inspect}") if @index == start
+        raise syntax_error("unexpected #{peek(1).inspect}") if @index == start
       end
     ensure
       @scope = fn.scope.parent_scope
@@ -675,13 +699,16 @@ class JSAnalyzer::Parser
     condition
   end
 
+  WHITESPACE_BYTES = [9, 10, 11, 12, 13, 32].freeze
+  SEMICOLON = ';'.ord
+
   # Whether the last non-whitespace character consumed was a `;`. Nested
   # statement calls consume the `;` that ends them, so callers that need a
   # separator (e.g. the clauses of a for loop) check this before gobbling one.
   def terminated?
-    return false if @index == 0
-    i = @source.rindex(/\S/, @index - 1)
-    !i.nil? && @source[i] == ';'
+    i = @index - 1
+    i -= 1 while i >= 0 && WHITESPACE_BYTES.include?(@source.getbyte(i))
+    i >= 0 && @source.getbyte(i) == SEMICOLON
   end
 
   # Parses the right side of the binary operator `op` and pushes the
@@ -707,7 +734,8 @@ class JSAnalyzer::Parser
   #           PRECEDENCE), or a `;`; used to parse operands
   # top:      this is the start of a statement, so `function` and `class` are
   #           declarations rather than expressions
-  STATEMENT_KEYWORDS = %w(break class const continue debugger do export for function if import let return switch throw try var while with)
+  STATEMENT_KEYWORDS = Set.new(%w(break class const continue debugger do export for function if import let return switch throw try var while with)).freeze
+  BINARY_OPERATOR_TOKENS = PRECEDENCE.keys.freeze
 
   def statement(no_in: false, min_prec: 0, top: false)
     stack = []
@@ -976,7 +1004,7 @@ class JSAnalyzer::Parser
             rewind(1)
             return stack.pop
           end
-        when *PRECEDENCE.keys
+        when *BINARY_OPERATOR_TOKENS
           # Binary operator, including assignment
           m = match
           if stack.empty? && m == '/='
