@@ -79,9 +79,7 @@ class JSAnalyzer::Node::Switch
     js = "switch (#{@discriminant.to_js}) {"
     @cases.each do |test, statements|
       js << "\n#{indentation}    " << (test ? "case #{test.to_js}:" : "default:")
-      statements.each do |part|
-        js << "\n#{indentation}        #{part.to_js(indentation + '        ')};"
-      end
+      js << JSAnalyzer::Node.statements_to_js(statements, indentation + '        ')
     end
     js << "\n#{indentation}}"
   end

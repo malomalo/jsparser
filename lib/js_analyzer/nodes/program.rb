@@ -3,6 +3,9 @@ class JSAnalyzer::Node::Program < JSAnalyzer::Node::Scope
   # The source that was parsed
   attr_accessor :source
 
+  # The `#!` line at the start of the source, if there is one
+  attr_accessor :hashbang
+
   def initialize(**options)
     super(kind: :program, **options)
   end
@@ -16,9 +19,9 @@ class JSAnalyzer::Node::Program < JSAnalyzer::Node::Scope
 
   def to_js(indentation="")
     js = String.new
-    @statements.each do |statment|
-      js << statment.to_js << ";\n"
-    end
+    js << @hashbang << "\n" if @hashbang
+    statements = JSAnalyzer::Node.statements_to_js(@statements)
+    js << statements[1..] << "\n" unless statements.empty?
     js
   end
 

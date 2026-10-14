@@ -21,11 +21,7 @@ class JSAnalyzer::Node::Class
     js = String.new("class ")
     js << "#{@name.to_js} " if @name
     js << "extends #{@extends.to_js} " if @extends
-    js << "{\n"
-    @body.each do |part|
-      js << indentation << "    " << part.to_js(indentation + "    ") << ";\n"
-    end
-    js << "#{indentation}}"
+    js << "{" << JSAnalyzer::Node.statements_to_js(@body, indentation + "    ") << "\n#{indentation}}"
   end
 
 end

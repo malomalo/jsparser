@@ -30,9 +30,11 @@ class JSAnalyzer::ForLoopTest < Minitest::Test
     JS
     
     assert_parse(input, <<~JS)
+        // Parenthesize the whole initializer
         for (let a = ("start" in window ? window.start : 0); i < 9; i++) {
             console.log(i);
         };
+        // Parenthesize the `in` expression
         for (let b = ("start" in window) ? window.start : 0; i < 9; i++) {
             console.log(i);
         };
@@ -61,6 +63,7 @@ class JSAnalyzer::ForLoopTest < Minitest::Test
             if (j > 3) {
                 break;
             };
+            // more statements
         };
         let i = 0;
         for (;;) {

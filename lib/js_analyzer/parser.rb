@@ -69,6 +69,7 @@ class JSAnalyzer::Parser
     raise syntax_error("unexpected #{peek.value.inspect}") unless peek.eof?
 
     @scope.source = @source
+    @scope.hashbang = @tokens.hashbang
     @scope.close!
     @scope
   end
@@ -152,6 +153,7 @@ class JSAnalyzer::Parser
     statements = []
     loop do
       token = peek(regex: true)
+      add_comments(statements, token)
       break if token.eof? || token.punctuator?('}') || (stop_names && token.name_in?(stop_names))
 
       st = statement_list_item
@@ -159,6 +161,15 @@ class JSAnalyzer::Parser
       raise syntax_error("unexpected #{token.value.inspect}", token) if peek(regex: true).start == token.start
     end
     statements
+  end
+
+  # Adds the comments before `token` to a statement list or class body. A
+  # comment can't trail anything at the start of the list.
+  def add_comments(list, token)
+    token.comments&.each do |comment|
+      comment.trailing = false if list.empty?
+      list << comment
+    end
   end
 
   # A statement where one may begin: here `{` starts a block rather than an
@@ -504,7 +515,9 @@ class JSAnalyzer::Parser
 
     begin
       @scope = klass.scope
-      until accept('}')
+      loop do
+        add_comments(klass.body, peek)
+        break if accept('}')
         part = parse_class_part
         klass.body << part if part
       end

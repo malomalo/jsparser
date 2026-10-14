@@ -22,7 +22,8 @@ class JSAnalyzer::Tokenizer
   # lex_start   where lexing it began, before the whitespace and comments
   #             in front of it
   # regex       whether it was read where a regex could start
-  Token = Struct.new(:type, :value, :start, :end, :newline_before, :lex_start, :regex) do
+  # comments    the comments before it (JSAnalyzer::Node::Comment), or nil
+  Token = Struct.new(:type, :value, :start, :end, :newline_before, :lex_start, :regex, :comments) do
     # The punctuator `expected`. (One value, not a splat, as this is called
     # constantly and a splat allocates an array per call.)
     def punctuator?(expected)
@@ -53,6 +54,7 @@ class JSAnalyzer::Tokenizer
 
   # Whitespace and comments
   SKIP = %r{(?:[\p{Space}\u{feff}]+|//[^\r\n\u2028\u2029]*|/\*.*?\*/)+}m
+  COMMENT = %r{//[^\r\n\u2028\u2029]*|/\*.*?\*/}m
 
   NAME = /[\p{Alpha}_$][\p{Alpha}_$\d]*/
   PRIVATE_NAME = /\#[\p{Alpha}_$][\p{Alpha}_$\d]*/
@@ -105,10 +107,13 @@ class JSAnalyzer::Tokenizer
   # The most recently consumed token
   attr_reader :last
 
+  # The `#!` line at the start of the source, if there is one
+  attr_reader :hashbang
+
   def initialize(source)
     @source = source
     @scanner = StringScanner.new(source)
-    @scanner.skip(/#![^\n]*/) # hashbang, e.g. #!/usr/bin/env node
+    @hashbang = @scanner.scan(/#![^\n]*/) # e.g. #!/usr/bin/env node
     # Tokens read but not consumed, the next first; the scanner is after the
     # last of them
     @buffer = []
@@ -186,18 +191,40 @@ class JSAnalyzer::Tokenizer
     token.type == :regex || token.punctuator_in?(SLASHES)
   end
 
-  # Whether the source from `from` up to `to` has a line break: \n, \r, or
-  # U+2028/U+2029 (E2 80 A8/A9 in UTF-8). Looks at the bytes so skipping
-  # whitespace doesn't allocate a string.
-  def line_terminator_between?(from, to)
+  SLASH = '/'.ord
+
+  # Whether the source from `from` up to `to` has a line break (\n, \r, or
+  # U+2028/U+2029, which are E2 80 A8/A9 in UTF-8), and whether it has a `/`
+  # (so possibly a comment). Looks at the bytes so skipping whitespace
+  # doesn't allocate a string.
+  def scan_skipped(from, to)
+    newline = slash = false
     i = from
     while i < to
       byte = @source.getbyte(i)
-      return true if byte == 10 || byte == 13
-      return true if byte == 0xE2 && @source.getbyte(i + 1) == 0x80 && (@source.getbyte(i + 2) | 1) == 0xA9
+      if byte == 10 || byte == 13
+        newline = true
+      elsif byte == SLASH
+        slash = true
+      elsif byte == 0xE2 && @source.getbyte(i + 1) == 0x80 && (@source.getbyte(i + 2) | 1) == 0xA9
+        newline = true
+      end
       i += 1
     end
-    false
+    [newline, slash]
+  end
+
+  # The comments in the skipped source from `from` up to `to`. A comment is
+  # trailing if no line break comes between the code before it and it.
+  def comments_between(from, to)
+    skipped = @source.byteslice(from, to - from)
+    comments = []
+    skipped.scan(COMMENT) do
+      offset = from + $~.bytebegin(0)
+      trailing = !scan_skipped(from, offset)[0]
+      comments << JSAnalyzer::Node::Comment.new($~[0], offset...(offset + $~[0].bytesize), trailing: trailing)
+    end
+    comments
   end
 
   # The punctuator at `start`, moving past it, or nil
@@ -221,9 +248,14 @@ class JSAnalyzer::Tokenizer
     lex_start = @scanner.pos
     @scanner.skip(SKIP) if SKIP_START[@source.getbyte(lex_start) || 0]
     start = @scanner.pos
-    newline = start > lex_start && line_terminator_between?(lex_start, start)
+    newline = false
+    comments = nil
+    if start > lex_start
+      newline, slash = scan_skipped(lex_start, start)
+      comments = comments_between(lex_start, start) if slash
+    end
     byte = @source.getbyte(start)
-    return Token.new(:eof, nil, start, start, newline, lex_start, regex) unless byte
+    return Token.new(:eof, nil, start, start, newline, lex_start, regex, comments) unless byte
 
     type = :punctuator
     value = case BYTE_CLASS[byte]
@@ -266,7 +298,7 @@ class JSAnalyzer::Tokenizer
     end
     raise syntax_error("unexpected #{@source.byteslice(start, 4).scrub[0].inspect}") unless value
 
-    Token.new(type, value, start, @scanner.pos, newline, lex_start, regex)
+    Token.new(type, value, start, @scanner.pos, newline, lex_start, regex, comments)
   end
 
 end

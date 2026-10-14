@@ -6,6 +6,7 @@ class JSAnalyzer::Node
   autoload :BracketAccessor,        'js_analyzer/nodes/bracket_accessor'
   autoload :Class,                  'js_analyzer/nodes/class'
   autoload :DotAccessor,            'js_analyzer/nodes/dot_accessor'
+  autoload :Comment,                'js_analyzer/nodes/comment'
   autoload :DestructureArray,       'js_analyzer/nodes/destructure_array'
   autoload :DestructureObject,      'js_analyzer/nodes/destructure_object'  
   autoload :ExportStatement,        'js_analyzer/nodes/export_statement'
@@ -54,10 +55,22 @@ class JSAnalyzer::Node
   def self.block_to_js(statements, indentation="")
     return "{ }" if statements.empty?
 
-    js = ::String.new("{")
-    statements.each do |part|
-      js << "\n#{indentation}    #{part.to_js(indentation + '    ')};"
+    "{#{statements_to_js(statements, indentation + '    ')}\n#{indentation}}"
+  end
+
+  # Renders a list of statements (or class members), each on its own line
+  # starting with a line break, ending in `;`. Comments go on their own line,
+  # or for a trailing comment, at the end of the line before.
+  def self.statements_to_js(statements, indentation="")
+    js = ::String.new
+    statements.each do |statement|
+      if statement.is_a?(JSAnalyzer::Node::Comment)
+        js << (statement.trailing? && !js.empty? ? " " : "\n#{indentation}")
+        js << statement.to_js(indentation)
+      else
+        js << "\n#{indentation}" << statement.to_js(indentation) << ";"
+      end
     end
-    js << "\n#{indentation}}"
+    js
   end
 end

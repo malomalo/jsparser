@@ -5,11 +5,7 @@ class JSAnalyzer::Node::Class::InitializationBlock < JSAnalyzer::Node::Scope
   end
 
   def to_js(indentation="")
-    js = String.new("{\n")
-    @statements.each do |statment|
-      js << indentation << '    ' << statment.to_js(indentation + '    ') << ";\n"
-    end
-    js << "#{indentation}}"
+    "{#{JSAnalyzer::Node.statements_to_js(@statements, indentation + '    ')}\n#{indentation}}"
   end
   
 end

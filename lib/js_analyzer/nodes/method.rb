@@ -63,12 +63,7 @@ class JSAnalyzer::Node::Method
     if @type == :arrow && @expression_body
       js << @body.first.to_js
     else
-      js << "{"
-      @body.each do |part|
-        js << "\n#{indentation+'    '}#{part.to_js(indentation+'    ')};"
-      end
-      js << (@body.size == 0 ? " " : "\n#{indentation}")
-      js << "}"
+      js << JSAnalyzer::Node.block_to_js(@body, indentation)
     end
     js
   end

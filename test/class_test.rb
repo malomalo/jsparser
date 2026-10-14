@@ -40,18 +40,21 @@ class JSAnalyzer::ClassTest < Minitest::Test
     JS
     
     assert_parse(input, <<~JS)
+        // Declaration
         class Rectangle {
             constructor(height, width) {
                 this.height = height;
                 this.width = width;
             };
         };
+        // Expression; the class is anonymous but assigned to a variable
         const Rectangle = class {
             constructor(height, width) {
                 this.height = height;
                 this.width = width;
             };
         };
+        // Expression; the class has its own name
         const Rectangle = class Rectangle2 {
             constructor(height, width) {
                 this.height = height;
@@ -121,10 +124,10 @@ class JSAnalyzer::ClassTest < Minitest::Test
             static [`${PREFIX}Field`] = "static prefixed field";
         };
         const instance = new ClassWithField();
-        console.log(Object.hasOwn(instance, "field"));
-        console.log(instance.field);
-        console.log(instance.fieldWithInitializer);
-        console.log(instance.prefixField);
+        console.log(Object.hasOwn(instance, "field")); // true
+        console.log(instance.field); // undefined
+        console.log(instance.fieldWithInitializer); // "instance field"
+        console.log(instance.prefixField); // "prefixed field"
     JS
   end
   
@@ -166,10 +169,13 @@ class JSAnalyzer::ClassTest < Minitest::Test
     JS
     
     assert_parse(input, <<~JS)
+        // Declaration
         class Rectangle {
+            // Getter
             get area() {
                 return this.calcArea();
             };
+            // Getter
             static get area() {
                 return 42;
             };
@@ -194,10 +200,13 @@ class JSAnalyzer::ClassTest < Minitest::Test
     JS
     
     assert_parse(input, <<~JS)
+        /* Declaration */
         class Rectangle {
+            /* Setter */
             set area(length) {
                 this.area = v ** 2;
             };
+            /* Setter */
             static set area(length) {
                 this.area = v ** 2;
             };
@@ -267,6 +276,7 @@ class JSAnalyzer::ClassTest < Minitest::Test
     
     assert_parse(input, <<~JS)
         const name = 'fnName';
+        // Declaration
         class Rectangle {
             calcArea() {
                 return this.height * this.width;
@@ -369,10 +379,14 @@ class JSAnalyzer::ClassTest < Minitest::Test
         class ClassWithPrivate {
             #privateField;
             #privateFieldWithInitializer = 42;
-            #privateMethod() { };
+            #privateMethod() {
+                // …
+            };
             static #privateStaticField;
             static #privateStaticFieldWithInitializer = 42;
-            static #privateStaticMethod() { };
+            static #privateStaticMethod() {
+                // …
+            };
         };
     JS
   end

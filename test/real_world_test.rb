@@ -8,12 +8,13 @@ class JSAnalyzer::RealWorldTest < Minitest::Test
     assert_parse("switch (x) { case 1: a(); // next\n case 2: b(); }", <<~JS)
         switch (x) {
             case 1:
-                a();
+                a(); // next
             case 2:
                 b();
         };
     JS
     assert_parse("// walk\nouter: while (x) { break outer; }", <<~JS)
+        // walk
         outer: while (x) {
             break outer;
         };
@@ -21,7 +22,7 @@ class JSAnalyzer::RealWorldTest < Minitest::Test
   end
 
   test 'hashbang' do
-    assert_parse("#!/usr/bin/env node\nrun()", "run();")
+    assert_parse("#!/usr/bin/env node\nrun()", "#!/usr/bin/env node\nrun();")
   end
 
   test 'template literals' do
