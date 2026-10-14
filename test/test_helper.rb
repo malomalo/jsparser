@@ -8,7 +8,7 @@ $LOAD_PATH << File.expand_path('../../lib', __FILE__)
 #   add_group 'ext', 'condenser/ext'
 # end
 
-require 'jsanalyzer'
+require 'jsparser'
 
 require 'timeout'
 require "minitest/autorun"
@@ -37,22 +37,22 @@ class Minitest::Test
   PARSE_TIMEOUT = Float(ENV.fetch('PARSE_TIMEOUT', 5))
 
   def assert_parse(input, output)
-    js = Timeout.timeout(PARSE_TIMEOUT) { JSAnalyzer.parse(input).to_js }
+    js = Timeout.timeout(PARSE_TIMEOUT) { JSParser.parse(input).to_js }
     assert_equal output.rstrip, js.rstrip
   end
 
   # Asserts how an expression is grouped by rendering binary and ternary
   # operators fully parenthesized, e.g. "a + b * c" => "(a + (b * c))"
   def assert_tree(input, output)
-    program = Timeout.timeout(PARSE_TIMEOUT) { JSAnalyzer.parse(input) }
+    program = Timeout.timeout(PARSE_TIMEOUT) { JSParser.parse(input) }
     assert_equal output, program.statements.map { tree_js(it) }.join("; ")
   end
 
   def tree_js(node)
     case node
-    when JSAnalyzer::Node::BinaryOperator
+    when JSParser::Node::BinaryOperator
       "(#{tree_js(node.left)} #{node.operation} #{tree_js(node.right)})"
-    when JSAnalyzer::Node::Ternary
+    when JSParser::Node::Ternary
       "(#{tree_js(node.condition)} ? #{tree_js(node.a)} : #{tree_js(node.b)})"
     else
       node.to_js

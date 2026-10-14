@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::ClassTest < Minitest::Test
+class JSParser::ClassTest < Minitest::Test
 
   test 'class definintions' do
     input = <<~JS

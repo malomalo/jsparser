@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::RegexTest < Minitest::Test
+class JSParser::RegexTest < Minitest::Test
   
   # test 'regex chars that dont need escaping' do
   #   assert_parse('this._agsAdmin=/(https?:\/\/[^/]+\/[^/]+)\/admin\/?(\/.*)?$/i', <<~JS)

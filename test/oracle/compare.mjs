@@ -1,4 +1,4 @@
-// Compares each original source with JSAnalyzer's output by parsing both with
+// Compares each original source with JSParser's output by parsing both with
 // acorn and diffing the trees.
 //
 //   node compare.mjs manifest.json
@@ -38,7 +38,7 @@ const BODY_KEYS = { IfStatement: ["consequent", "alternate"], ForStatement: ["bo
   ForInStatement: ["body"], ForOfStatement: ["body"], WhileStatement: ["body"],
   DoWhileStatement: ["body"], WithStatement: ["body"] };
 
-// Removes differences JSAnalyzer makes on purpose: positions, how literals
+// Removes differences JSParser makes on purpose: positions, how literals
 // were written, empty statements, and braces added around single-statement
 // bodies.
 function normalize(node) {

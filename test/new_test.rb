@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::NewTest < Minitest::Test
+class JSParser::NewTest < Minitest::Test
 
   test 'new with and without arguments' do
     assert_parse('new X', 'new X();')

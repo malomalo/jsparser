@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::PrecedenceTest < Minitest::Test
+class JSParser::PrecedenceTest < Minitest::Test
 
   test 'higher precedence binds tighter' do
     assert_tree('a * b + c', '((a * b) + c)')
@@ -60,7 +60,7 @@ class JSAnalyzer::PrecedenceTest < Minitest::Test
   end
 
   test 'a stray token raises instead of hanging' do
-    assert_raises(JSAnalyzer::SyntaxError) { JSAnalyzer.parse('a )') }
+    assert_raises(JSParser::SyntaxError) { JSParser.parse('a )') }
   end
 
 end

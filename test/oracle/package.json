@@ -1,7 +1,7 @@
 {
-  "name": "jsanalyzer-oracle",
+  "name": "jsparser-oracle",
   "private": true,
-  "description": "Compares JSAnalyzer's output with the original source using acorn",
+  "description": "Compares JSParser's output with the original source using acorn",
   "type": "module",
   "dependencies": {
     "acorn": "^8.19.0"

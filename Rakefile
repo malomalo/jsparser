@@ -18,10 +18,10 @@ desc "Parse and print every .js file in DIR and compare the result with acorn (r
 task :oracle, [:dir] do |_, args|
   $LOAD_PATH.unshift File.expand_path('lib', __dir__)
   require_relative 'test/oracle/oracle'
-  JSAnalyzer::Oracle.run(args[:dir] || ENV['DIR'])
+  JSParser::Oracle.run(args[:dir] || ENV['DIR'])
 end
 
-spec = Gem::Specification.load("jsanalyzer.gemspec")
+spec = Gem::Specification.load("jsparser.gemspec")
 
 Gem::PackageTask.new(spec) do |pkg|
 #   pkg.need_zip = true

@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::ExportTest < Minitest::Test
+class JSParser::ExportTest < Minitest::Test
 
   test 'export statments' do
     input = <<~JS

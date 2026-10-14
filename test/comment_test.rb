@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::CommentTest < Minitest::Test
+class JSParser::CommentTest < Minitest::Test
 
   test 'comments on their own line and after code' do
     assert_parse(<<~JS, <<~JS)
@@ -69,8 +69,8 @@ class JSAnalyzer::CommentTest < Minitest::Test
   end
 
   test 'comments are Comment nodes in statement lists' do
-    program = JSAnalyzer.parse("a(); // why\n// next\nb();")
-    comments = program.statements.grep(JSAnalyzer::Node::Comment)
+    program = JSParser.parse("a(); // why\n// next\nb();")
+    comments = program.statements.grep(JSParser::Node::Comment)
 
     assert_equal ["// why", "// next"], comments.map(&:text)
     assert_equal [true, false], comments.map(&:trailing?)

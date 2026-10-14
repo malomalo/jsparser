@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::ExpressionTest < Minitest::Test
+class JSParser::ExpressionTest < Minitest::Test
 
   test 'spread of any expression' do
     assert_parse('f(...a.b)', 'f(...a.b);')
@@ -35,12 +35,12 @@ class JSAnalyzer::ExpressionTest < Minitest::Test
   end
 
   test 'optional chaining with brackets is a bracket accessor' do
-    program = JSAnalyzer.parse('a?.[b]; a?.b; a[b]')
+    program = JSParser.parse('a?.[b]; a?.b; a[b]')
     optional_bracket, optional_dot, bracket = program.statements
 
-    assert_instance_of JSAnalyzer::Node::BracketAccessor, optional_bracket
+    assert_instance_of JSParser::Node::BracketAccessor, optional_bracket
     assert optional_bracket.optional_chaining?
-    assert_instance_of JSAnalyzer::Node::DotAccessor, optional_dot
+    assert_instance_of JSParser::Node::DotAccessor, optional_dot
     assert optional_dot.optional_chaining?
     refute bracket.optional_chaining?
     assert_equal "a?.[b];\na?.b;\na[b];\n", program.to_js

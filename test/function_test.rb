@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::FunctionTest < Minitest::Test
+class JSParser::FunctionTest < Minitest::Test
 
   test 'regular function definintions' do
     input = <<~JS

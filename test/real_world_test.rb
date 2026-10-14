@@ -1,7 +1,7 @@
 require 'test_helper'
 
 # Cases found by parsing real files (node_modules, viking, Rails guides)
-class JSAnalyzer::RealWorldTest < Minitest::Test
+class JSParser::RealWorldTest < Minitest::Test
 
   test 'comments anywhere whitespace is allowed' do
     assert_parse("const { a, /* b */ c } = o", "const { a, c } = o;")

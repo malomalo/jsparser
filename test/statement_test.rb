@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::StatementTest < Minitest::Test
+class JSParser::StatementTest < Minitest::Test
 
   test 'while and do while' do
     assert_parse("while (i < 3) i++;", <<~JS)

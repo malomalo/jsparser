@@ -1,4 +1,4 @@
-# Parses every JavaScript file in a folder with JSAnalyzer, prints it back,
+# Parses every JavaScript file in a folder with JSParser, prints it back,
 # and checks the result with acorn (see compare.mjs): that the output is
 # valid, means the same thing as the original, and is stable when parsed
 # and printed again.
@@ -15,9 +15,9 @@ require 'json'
 require 'timeout'
 require 'tmpdir'
 require 'open3'
-require 'jsanalyzer'
+require 'jsparser'
 
-module JSAnalyzer::Oracle
+module JSParser::Oracle
   DIR = File.expand_path(__dir__)
   STATUSES = %w(ok parse_error invalid_output mismatch unstable original_invalid)
 
@@ -32,7 +32,7 @@ module JSAnalyzer::Oracle
     timeout = Float(ENV.fetch('TIMEOUT', 5))
     puts "Checking #{files.size} files in #{folder}"
 
-    results = Dir.mktmpdir("jsanalyzer-oracle") do |tmp|
+    results = Dir.mktmpdir("jsparser-oracle") do |tmp|
       manifest = files.each_with_index.map do |file, i|
         print_progress(i, files.size)
         check(file, File.join(tmp, "#{i}#{File.extname(file)}"), timeout)
@@ -53,9 +53,9 @@ module JSAnalyzer::Oracle
   # Parses and prints file, writing the output to output_path
   def self.check(file, output_path, timeout)
     source = File.read(file)
-    output = Timeout.timeout(timeout) { JSAnalyzer.parse(source).to_js }
+    output = Timeout.timeout(timeout) { JSParser.parse(source).to_js }
     File.write(output_path, output)
-    again = Timeout.timeout(timeout) { JSAnalyzer.parse(output).to_js } rescue nil
+    again = Timeout.timeout(timeout) { JSParser.parse(output).to_js } rescue nil
     { source: file, output: output_path, stable: again == output }
   rescue Exception => e
     raise if e.is_a?(Interrupt)

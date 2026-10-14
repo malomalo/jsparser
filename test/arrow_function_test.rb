@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::ArrowFunctionTest < Minitest::Test
+class JSParser::ArrowFunctionTest < Minitest::Test
  
   test 'arrow function with parens and without block' do
     input = <<~JS

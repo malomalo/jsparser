@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::ForLoopTest < Minitest::Test
+class JSParser::ForLoopTest < Minitest::Test
 
   test 'for loop' do
     input = <<~JS

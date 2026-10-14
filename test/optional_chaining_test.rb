@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::OptionalChainingTest < Minitest::Test
+class JSParser::OptionalChainingTest < Minitest::Test
  
   test 'optional chaining on properties brackets and calls' do
     input = <<~JS
