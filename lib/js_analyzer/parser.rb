@@ -48,12 +48,6 @@ class JSAnalyzer::Parser
     
     while !eos?
       @scope << statement
-
-      if @scope.statements.last.respond_to?(:to_js)
-        puts "JS: " + @scope.statements.last.to_js
-      else
-        puts "SR: " + @scope.statements.last.inspect
-      end
     end
     
     @scope
@@ -148,7 +142,7 @@ class JSAnalyzer::Parser
         end
 
       else
-        puts 'OBJECT WARNING'
+        # TODO: unhandled object member
       end
     end
   end
@@ -200,12 +194,9 @@ class JSAnalyzer::Parser
   def parse_array
     array = JSAnalyzer::Node::Array.new
     array.members << statement
-    puts cursor
     while gobble(/\p{Space}*\,/)
-    puts cursor
       array.members << statement
     end
-    puts array.members.map(&:to_js).inspect
     gobble!(/\p{Space}*\]/)
     array
   end
@@ -309,25 +300,14 @@ class JSAnalyzer::Parser
     args
   end
 
-  def statement(x=false)
-    statementx(x).tap do |x|
-      puts "PRESTACK: #{@stack.map(&:to_js)}"
-      puts "STATEMENT: #{x&.to_js}"
-      puts "POSTSTACK: #{@stack.map(&:to_js)}"
-    end
-  end
-  
-  def statementx(preceeded_by_open_arrow_fn=false)
+  def statement(preceeded_by_open_arrow_fn=false)
     @stack ||= []
     stack_size = @stack.size
     
     while true
       gobble(WHITESPACE)
-      begin; puts cursor ; rescue; end;
-      puts @stack.map(&:to_js).inspect
-  
+
       if gob = gobble(/(\;|=>|\?|\.\.\.|#{OPERATOR_REGEX}|\.|\[|\{|\(|\"|\'|\`|#{NUMBER}|#{IDENTIFIER})/)
-        puts "MATCH: #{match}"
         case match
         when ";"
           return @stack.pop
@@ -464,20 +444,15 @@ class JSAnalyzer::Parser
           else
             m = match
             y = statement
-          byebug
             @stack << JSAnalyzer::Node::BinaryOperator.new(left: @stack.pop, operation: , right: @stack.pop)
           end
         when "for"
           gobble!(/\p{Space}*\(/)
           a = statement
-          puts "A: #{a.to_js}"
           # gobble!(/\p{Space}*;/)
           b = statement
-          puts "B: #{b.to_js}"
           # gobble!(/\p{Space}*;/)
           c = statement
-          puts "C: #{c.to_js}"
-                    byebug
           gobble!(/\p{Space}*\)\p{Space}*{/)
           body = []
           while st = statement
@@ -568,16 +543,14 @@ class JSAnalyzer::Parser
             @stack << @scope.var(match)
           end
         when ","
-          puts ',,,,,,'
+          # TODO: comma operator
         else
-          puts match, '------~~~~-----'
+          # TODO: unhandled token
         end
       else
         gobble(/\p{Space}*;?/)
         if @stack.size > stack_size+1
-          byebug
-          puts @stack.map(&:to_js).join("; ")
-          raise 'stack issue' 
+          raise "stack issue: #{@stack.map(&:to_js).join("; ")}"
         end
         return @stack.pop
       end
@@ -612,7 +585,6 @@ class JSAnalyzer::Parser
         obj << if peek(1) == "/"
           match + scan_until_eol
         else
-        puts "ELSE"
           # error
         end
       end
@@ -679,7 +651,7 @@ class JSAnalyzer::Parser
         ret_value << statement
         gobble!(/\p{Space}*\}/)
       else
-        byebug
+        raise NotImplementedError, "unhandled `$` in template literal"
       end
     end
   end

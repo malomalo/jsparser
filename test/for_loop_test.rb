@@ -1,6 +1,6 @@
 require 'test_helper'
 
-class JSAnalyzer::ExportTest < Minitest::Test
+class JSAnalyzer::ForLoopTest < Minitest::Test
 
   test 'for loop' do
     input = <<~JS

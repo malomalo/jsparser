@@ -1,6 +1,6 @@
 # To make testing/debugging easier, test within this source tree versus an
 # installed gem
-$LOAD_PATH << File.expand_path('../lib', __FILE__)
+$LOAD_PATH << File.expand_path('../../lib', __FILE__)
 
 # require 'simplecov'
 # SimpleCov.start do
@@ -10,8 +10,8 @@ $LOAD_PATH << File.expand_path('../lib', __FILE__)
 
 require 'jsanalyzer'
 
+require 'timeout'
 require "minitest/autorun"
-require 'minitest/unit'
 require 'minitest/reporters'
 # require "mocha/setup"
 
@@ -32,8 +32,13 @@ class Minitest::Test
     end
   end
   
+  # The parser can loop forever on input it doesn't understand; fail the test
+  # instead of hanging the suite.
+  PARSE_TIMEOUT = Float(ENV.fetch('PARSE_TIMEOUT', 5))
+
   def assert_parse(input, output)
-    assert_equal output.rstrip, JSAnalyzer.parse(input).to_js.rstrip
+    js = Timeout.timeout(PARSE_TIMEOUT) { JSAnalyzer.parse(input).to_js }
+    assert_equal output.rstrip, js.rstrip
   end
   
 

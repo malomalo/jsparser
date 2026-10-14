@@ -68,7 +68,6 @@ class JSAnalyzer::Node::ImportStatement
 
     gobble = parser.gobble!(/\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
     while gobble
-    puts gobble.inspect
       case gobble
       when "*"
         gob = parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)[1]

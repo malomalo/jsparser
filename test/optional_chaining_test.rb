@@ -2,7 +2,7 @@ require 'test_helper'
 
 class JSAnalyzer::OptionalChainingTest < Minitest::Test
  
-  test 'arrow function with parens and without block' do
+  test 'optional chaining on properties brackets and calls' do
     input = <<~JS
         obj?.prop
         obj?.[expr]

@@ -2,7 +2,7 @@ require 'test_helper'
 
 class JSAnalyzer::SpreadSyntaxTest < Minitest::Test
  
-  test 'arrow function with parens and without block' do
+  test 'spread in function calls arrays and objects' do
     input = <<~JS
         myFunction(a, ...iterableObj, b)
         [1, ...iterableObj, '4', 'five', 6]

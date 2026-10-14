@@ -18,7 +18,6 @@ class JSAnalyzer::Node::DestructureObject
     js << @type << " " if @type
     js << "{ "
     js << @parts.map do |parts|
-      puts parts.inspect
       parts[1] ? "#{parts[0].to_js}: #{parts[1].to_js}" : parts[0].to_js
     end.join(', ')
     js << " }"

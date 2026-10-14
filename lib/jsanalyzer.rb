@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'stream_parser'
-require 'byebug'
 
 class JSAnalyzer
   

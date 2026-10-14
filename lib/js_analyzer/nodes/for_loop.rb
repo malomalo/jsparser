@@ -13,7 +13,6 @@ class JSAnalyzer::Node::ForLoop
     js = String.new("for (")
     if @initialization
       js << if @initialization.contains { it.is_a?(JSAnalyzer::Node::BinaryOperator) && it.operation == 'in' }
-        byebug
         @initialization.to_js(encapsulate: true)
       else
         @initialization.to_js

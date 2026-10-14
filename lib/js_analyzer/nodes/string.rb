@@ -26,7 +26,6 @@ class JSAnalyzer::Node::InterpolatedString
       if part.is_a?(String)
         js << part
       else
-      puts part.inspect
         js << "${" << part.to_js << "}"
       end
     end
