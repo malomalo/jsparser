@@ -8,7 +8,7 @@ class JSAnalyzer::Node::ImportStatement
       @name = name
     end
     
-    def to_js
+    def to_js(indentation="")
       if @name.is_a?(String)
         "#{@name} as #{var.to_js}"
       else
@@ -23,7 +23,7 @@ class JSAnalyzer::Node::ImportStatement
       @as = as
     end
     
-    def to_js
+    def to_js(indentation="")
       @as.to_js
     end
   end
@@ -33,7 +33,7 @@ class JSAnalyzer::Node::ImportStatement
       @as = as
     end
     
-    def to_js
+    def to_js(indentation="")
       "* as #{@as.to_js}"
     end
   end
@@ -45,7 +45,7 @@ class JSAnalyzer::Node::ImportStatement
       @imports = []
     end
     
-    def to_js
+    def to_js(indentation="")
       "{ #{@imports.map(&:to_js).join(', ')} }"
     end
   end
@@ -55,7 +55,7 @@ class JSAnalyzer::Node::ImportStatement
     @from = from
   end
   
-  def to_js
+  def to_js(indentation="")
     js = "import #{@imports.map(&:to_js).join(', ')}"
     js << ' from ' if @imports.size > 0
     js << @from.to_js

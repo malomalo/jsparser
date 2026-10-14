@@ -60,7 +60,7 @@ class JSAnalyzer::PrecedenceTest < Minitest::Test
   end
 
   test 'a stray token raises instead of hanging' do
-    assert_raises(RuntimeError) { JSAnalyzer.parse('a )') }
+    assert_raises(JSAnalyzer::SyntaxError) { JSAnalyzer.parse('a )') }
   end
 
 end

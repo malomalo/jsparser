@@ -5,7 +5,7 @@ class JSAnalyzer::Node::Program < JSAnalyzer::Node::Scope
     @globals = {}
   end
   
-  def to_js
+  def to_js(indentation="")
     js = String.new
     @statements.each do |statment|
       js << statment.to_js << ";\n"

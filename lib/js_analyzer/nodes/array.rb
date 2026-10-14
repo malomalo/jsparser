@@ -7,7 +7,10 @@ class JSAnalyzer::Node::Array
   end
 
   def to_js(indentation="")
-    "[#{@members.map(&:to_js).join(", ")}]"
+    js = @members.map { it ? it.to_js : "" }.join(", ")
+    # A trailing hole needs its comma, [1, ,] has two elements
+    js << "," if @members.last.nil? && !@members.empty?
+    "[#{js}]"
   end
 
 end

@@ -28,6 +28,7 @@ class JSAnalyzer::Node
   autoload :Scope,                  'js_analyzer/nodes/scope'
   autoload :String,                 'js_analyzer/nodes/string'
   autoload :SpreadOperator,          'js_analyzer/nodes/operators/spread_operator'
+  autoload :TaggedTemplate,         'js_analyzer/nodes/tagged_template'
   autoload :Ternary,                'js_analyzer/nodes/ternary'
   autoload :UnaryOperator,          'js_analyzer/nodes/unary_operator'
   autoload :VariableDeclaration,    'js_analyzer/nodes/variable_declaration'

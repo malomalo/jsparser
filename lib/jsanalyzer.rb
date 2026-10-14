@@ -5,7 +5,9 @@ require 'stream_parser'
 class JSAnalyzer
   
   autoload :Node, 'js_analyzer/node'
-  
+
+  class SyntaxError < StandardError; end
+
   def self.parse(source)
     JSAnalyzer::Parser.parse(source)
   end
