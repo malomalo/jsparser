@@ -45,6 +45,8 @@ class JSAnalyzer::Node::Object
         case entry.key
         when String
           "#{entry.key}: #{entry.value.to_js}"
+        when JSAnalyzer::Node::String
+          "#{entry.key.to_js}: #{entry.value.to_js}"
         else
           "[#{entry.key.to_js}]: #{entry.value.to_js}"
         end

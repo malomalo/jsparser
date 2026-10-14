@@ -21,6 +21,16 @@ class JSAnalyzer::Parser
     end
   end
   
+  # Reads a string literal's contents up to the closing quote_char, keeping
+  # escape sequences as written. (StreamParser's version removes the
+  # backslashes, so `"a\"b"` would print back as `"a"b"`.)
+  def quoted_value(quote_char = '"', _escape_chars = nil)
+    q = Regexp.escape(quote_char)
+    m = gobble(/((?:[^#{q}\\\r\n]|\\.)*)#{q}/m)
+    raise "SyntaxError: unterminated string at #{@index}" unless m
+    m[1]
+  end
+
   def gobble!(r)
     x = gobble(r)
     raise 'SyntaxError' unless x
@@ -141,15 +151,15 @@ class JSAnalyzer::Parser
         end
 
       when '"', "'"
-        key = quoted_value(match)
+        quote = match
+        key = JSAnalyzer::Node::String.new(quoted_value(quote), quote)
         return parse_scope([key]) unless gobble(/\p{Space}*:\p{Space}*/)
         obj.add(key, expression)
         gobble(/\p{Space}*,/)
       when "class"
         return JSAnalyzer::Node::Class.parse(self)
       when '...'
-        variable = @scope.var(gobble!(IDENTIFIER))
-        obj.spread(variable)
+        obj.spread(expression)
         gobble(/\p{Space}*,/)
       when "/"
         case peek(1)
@@ -191,13 +201,34 @@ class JSAnalyzer::Parser
         gobble(/\p{Space}*,/)
       when IDENTIFIER
         key = match
+
+        # Getter or setter: `get name() {}`, `set [expr](v) {}`
+        if (key == 'get' || key == 'set') && (name = gobble(/\p{Space}+(#{IDENTIFIER}|#{NUMBER})|\p{Space}*(\[)/))
+          name = name[1] || name[2]
+          if name == '['
+            name = statement
+            gobble!(/\p{Space}*\]/)
+          end
+          gobble!(/\p{Space}*\(/)
+          accessor = key == 'get' ? JSAnalyzer::Node::Class::Getter : JSAnalyzer::Node::Class::Setter
+          obj.shorthand(accessor.new(parse_function(name, false, false, :class)))
+          gobble(/\p{Space}*,/)
+          next
+        end
+
+        if peek(/\p{Space}*\}/)
+          # Shorthand property as the last entry
+          obj.shorthand(@scope.var(key))
+          next
+        end
+
         return parse_scope([key]) unless gob = gobble(/\p{Space}*([:,\(])\p{Space}*/)
-        
+
         case gob[1]
         when ","
           obj.shorthand(@scope.var(key))
         when "("
-          obj.add(key, parse_function(key, false, false, :class))
+          obj.shorthand(parse_function(key, false, false, :class))
           gobble(/\p{Space}*,/)
         else
           obj.add(key, expression)
@@ -213,20 +244,22 @@ class JSAnalyzer::Parser
   def parse_function(name, async, generator, type)
     fn = JSAnalyzer::Node::Method.new(name: name, async: async, scope: @scope, generator: generator, type: type)
 
-    # Parse Arguments
-    while nibble = gobble(/\p{Space}*(\/|\.\.\.|#{IDENTIFIER})/)
-      case nibble[1]
-      when "..."
-        fn.args << JSAnalyzer::Node::SpreadOperator.new
-      when IDENTIFIER
-        fn.args << fn.scope.declare('argument', nibble[1])
+    # Parse parameters: plain names, rest (...args), defaults (a = 1) and
+    # destructuring patterns ({ a, b }, [a, b])
+    until gobble(/\p{Space}*\)/)
+      start = @index
+      rest = gobble(/\p{Space}*\.\.\./)
+      param = if name = gobble(/\p{Space}*(#{IDENTIFIER})(?=\p{Space}*[,)])/)&.[](1)
+        fn.scope.declare('argument', name)
       else
-        raise 'Fun Arg syntax error'
+        expression
       end
+      fn.args << (rest ? JSAnalyzer::Node::SpreadOperator.new(param) : param)
       gobble(/\p{Space}*,/)
+      raise "SyntaxError: unexpected #{@source[@index].inspect} at #{@index}" if @index == start
     end
 
-    gobble!(/\p{Space}*\)\p{Space}*\{/)
+    gobble!(/\p{Space}*\{/)
     
     parse_function_body(fn)
     
@@ -465,8 +498,7 @@ class JSAnalyzer::Parser
           args = gobble(/\p{Space}*\(/) ? parse_args : []
           stack << JSAnalyzer::Node::Instantiation.new(what, args)
         when "..."
-          var = gobble(/\p{Space}*(#{IDENTIFIER})/)&.[](1)
-          return JSAnalyzer::Node::SpreadOperator.new(var ? @scope.var(var) : nil)
+          return JSAnalyzer::Node::SpreadOperator.new(expression)
         when "{"
           if stack.size > 0
             rewind(1)
@@ -506,7 +538,7 @@ class JSAnalyzer::Parser
               gobble!(/\p{Space}*\]\p{Space}*/)
               JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: key, optional_chaining: true)
             when '.'
-              JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/#{IDENTIFIER}/)[0], optional_chaining: true)
+              JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/\#?#{IDENTIFIER}/)[0], optional_chaining: true)
             end
           else
             if PRECEDENCE['?'] < min_prec
@@ -523,7 +555,7 @@ class JSAnalyzer::Parser
           if stack.empty?
             raise 'Stack expected'
           else
-            stack << JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/#{IDENTIFIER}/)[0])
+            stack << JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/\#?#{IDENTIFIER}/)[0])
           end
         when "["
           if newline && !stack.empty?
@@ -543,7 +575,8 @@ class JSAnalyzer::Parser
         when NUMBER_TOKEN
           stack << JSAnalyzer::Node::Number.new(match)
         when '"', "'"
-          stack << JSAnalyzer::Node::String.new(quoted_value(match), match)
+          quote = match
+          stack << JSAnalyzer::Node::String.new(quoted_value(quote), quote)
         when "`"
           stack << tick_quoted_value
         when "!", "~", "delete", "typeof", "void", "await"
