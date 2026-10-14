@@ -15,6 +15,14 @@ class JSAnalyzer::Node::Scope
   # Scopes that `var` declarations belong to
   VAR_SCOPES = %i(program function arrow function_body static_block)
 
+  # Whether the scope's code is strict mode: module code, class bodies,
+  # code after a "use strict" directive, and everything inside those
+  attr_writer :strict
+
+  def strict?
+    @strict
+  end
+
   def initialize(scope: nil, statements: [], kind: :block)
     @statements = statements
     @kind = kind
@@ -23,6 +31,7 @@ class JSAnalyzer::Node::Scope
     @pending = []
     @children = []
     @parent_scope = scope
+    @strict = kind == :class || scope&.strict? || false
     scope&.children&.<<(self)
   end
 
@@ -32,10 +41,39 @@ class JSAnalyzer::Node::Scope
   def declare(kind, name, range: nil)
     target = kind == 'var' ? var_scope : self
     existing = target.declarations[name]
+    if existing&.block_function? && LEXICAL.include?(kind)
+      # A let, const or class replaces a binding added for a function in a
+      # block (see declare_block_function), which then doesn't apply
+      target.declarations.delete(name)
+      existing = nil
+    end
+
     identifier = existing ? existing.identifier : JSAnalyzer::Node::Identifier.new(name)
     declaration = JSAnalyzer::Node::VariableDeclaration.new(kind, identifier, scope: target, range: range)
     target.declarations[name] ||= declaration
     declaration
+  end
+
+  LEXICAL = %w(let const class).freeze
+
+  # In non-strict code a function declared in a block (`{ function f() {} }`)
+  # is also a var in the enclosing function (Annex B.3.3 of the spec), unless
+  # that would clash with a let, const or class there. The two bindings share
+  # an Identifier, so renaming one renames both.
+  def declare_block_function(declaration)
+    target = var_scope
+    return if target.equal?(self) || strict?
+
+    existing = target.declarations[declaration.text]
+    return if existing && LEXICAL.include?(existing.kind)
+
+    if existing
+      declaration.identifier = existing.identifier
+    else
+      target.declarations[declaration.text] = JSAnalyzer::Node::VariableDeclaration.new(
+        'function', declaration.identifier, scope: target, range: declaration.range, block_function: true
+      )
+    end
   end
 
   # A reference to `name` from this scope

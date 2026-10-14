@@ -12,15 +12,23 @@
 class JSAnalyzer::Node::VariableDeclaration
 
   attr_reader :kind, :identifier, :text, :range, :scope, :references
+  attr_writer :identifier # to share another declaration's (see Scope#declare_block_function)
 
-  def initialize(kind, identifier, scope:, range: nil, text: identifier.name, implicit: false)
+  def initialize(kind, identifier, scope:, range: nil, text: identifier.name, implicit: false, block_function: false)
     @kind = kind
     @identifier = identifier
     @text = text
     @range = range
     @scope = scope
     @implicit = implicit
+    @block_function = block_function
     @references = []
+  end
+
+  # True for the var a function declared in a block also gets in non-strict
+  # code (see Scope#declare_block_function)
+  def block_function?
+    @block_function
   end
 
   def name

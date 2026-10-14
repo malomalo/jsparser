@@ -8,8 +8,10 @@ class JSAnalyzer
 
   class SyntaxError < StandardError; end
 
-  def self.parse(source)
-    JSAnalyzer::Parser.parse(source)
+  # source_type: :script (the default, as in acorn) or :module. Module code
+  # is strict, which changes how functions declared in blocks are scoped.
+  def self.parse(source, source_type: :script)
+    JSAnalyzer::Parser.parse(source, source_type: source_type)
   end
 
 end

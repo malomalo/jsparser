@@ -239,4 +239,51 @@ class JSAnalyzer::ScopeTest < Minitest::Test
     assert_equal :function, declaration(program, 'arguments').scope.kind
   end
 
+  test 'in non-strict code a function declared in a block is also a var' do
+    program = JSAnalyzer.parse("{ function f() {} } f();")
+    block_f = declarations(program, 'f').find { it.scope.kind == :block }
+    var_f = program.declarations['f']
+
+    assert var_f.block_function?
+    assert_equal 1, var_f.references.size
+    assert block_f.identifier.equal?(var_f.identifier), "renaming one renames both"
+
+    block_f.identifier.name = 'g'
+    assert_equal "{\n    function g() { };\n};\ng();\n", program.to_js
+  end
+
+  test 'inside a function, the var belongs to the function' do
+    program = JSAnalyzer.parse("function g() { if (x) { function h() {} } return h; }")
+    h = declarations(program, 'h').find(&:block_function?)
+    assert_equal :function, h.scope.kind
+    assert_equal 1, h.references.size
+  end
+
+  test 'in strict code a function declared in a block stays in the block' do
+    ['"use strict"; { function f() {} } f();',
+     'function o() { "use strict"; { function f() {} } f(); }',
+     'class A { m() { { function f() {} } f(); } }'].each do |source|
+      program = JSAnalyzer.parse(source)
+      assert program.declarations['f'].implicit?, source
+    end
+
+    program = JSAnalyzer.parse("{ function f() {} } f();", source_type: :module)
+    assert program.declarations['f'].implicit?
+  end
+
+  test 'a let, const or class of the same name means the function stays in the block' do
+    ["let f; { function f() {} } f();", "{ function f() {} } let f; f();"].each do |source|
+      program = JSAnalyzer.parse(source)
+      assert_equal 'let', program.declarations['f'].kind, source
+      assert_equal 1, program.declarations['f'].references.size, source
+    end
+  end
+
+  test 'a var of the same name is the same variable' do
+    program = JSAnalyzer.parse("var f; { function f() {} } f();")
+    assert_equal 'var', program.declarations['f'].kind
+    assert_equal 1, program.declarations['f'].references.size
+    assert declarations(program, 'f').map(&:identifier).uniq.one?
+  end
+
 end

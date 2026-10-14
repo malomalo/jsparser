@@ -165,9 +165,10 @@ class JSAnalyzer::Parser
   NUMBER = /0[xX][\da-fA-F_]+n?|0[oO][0-7_]+n?|0[bB][01_]+n?|(?:\d[\d_]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?n?/
   NUMBER_TOKEN = /\A(?:#{NUMBER})\z/o
   
-  def parse
+  def parse(source_type: :script)
     @scope = JSAnalyzer::Node::Program.new
     gobble(/#![^\n]*/) # hashbang, e.g. #!/usr/bin/env node
+    @scope.strict = source_type == :module || use_strict?
 
     parse_statement_list.each { @scope << it }
     gobble(WHITESPACE)
@@ -179,6 +180,12 @@ class JSAnalyzer::Parser
   end
 
   STATEMENT_LIST_END = /\p{Space}*(\}|\z)/
+
+  # Whether a "use strict" directive is next, as at the start of a program or
+  # function body
+  def use_strict?
+    !!peek(/\p{Space}*(["'])use strict\1/)
+  end
 
   # Parses statements until `until` matches (by default a `}` or the end of
   # the source), without consuming it
@@ -451,6 +458,11 @@ class JSAnalyzer::Parser
       # scope of their own and the body's declarations in another, so a
       # default can't see a `var` in the body
       fn.body_scope = JSAnalyzer::Node::Scope.new(scope: fn.scope, kind: :function_body)
+    end
+
+    if brackets && use_strict?
+      fn.scope.strict = true
+      fn.body_scope.strict = true
     end
 
     begin
@@ -832,6 +844,7 @@ class JSAnalyzer::Parser
           
           fn = parse_function(m&.[](1), false, generator, :function, as_expression: !top,
                               name_range: m && group_range(m))
+          @scope.declare_block_function(fn.binding) if top && fn.binding
           return fn if top
           stack << fn
         when "class"
