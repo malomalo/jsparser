@@ -16,7 +16,7 @@ jobs:
           - '4.0'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -24,7 +24,7 @@ jobs:
           bundler-cache: true
 
       # For the acorn oracle, which checks test/oracle/fixtures
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
