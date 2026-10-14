@@ -1,11 +1,14 @@
 class JSAnalyzer::Node::Yield
 
-  def initialize(value)
+  # delegate is true for `yield* iterable`
+  def initialize(value, delegate: false)
     @value = value
+    @delegate = delegate
   end
   
   def to_js(indentation="")
-    @value ? "yield #{@value.to_js}" : "yield"
+    keyword = @delegate ? "yield*" : "yield"
+    @value ? "#{keyword} #{@value.to_js}" : keyword
   end
 
 end

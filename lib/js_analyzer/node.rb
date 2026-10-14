@@ -16,6 +16,7 @@ class JSAnalyzer::Node
   autoload :If,                     'js_analyzer/nodes/if'
   autoload :ImportStatement,        'js_analyzer/nodes/import_statement'
   autoload :Instantiation,          'js_analyzer/nodes/instantiation'
+  autoload :InterpolatedString,     'js_analyzer/nodes/string'
   autoload :JumpStatement,          'js_analyzer/nodes/jump_statement'
   autoload :Method,                 'js_analyzer/nodes/method'
   autoload :Number,                 'js_analyzer/nodes/number'
@@ -42,6 +43,9 @@ class JSAnalyzer::Node
   autoload :ThrowStatement,         'js_analyzer/nodes/statements'
   autoload :Try,                    'js_analyzer/nodes/statements'
   autoload :While,                  'js_analyzer/nodes/statements'
+  autoload :With,                   'js_analyzer/nodes/statements'
+  autoload :DebuggerStatement,      'js_analyzer/nodes/statements'
+  autoload :MetaProperty,           'js_analyzer/nodes/statements'
 
   # Renders the statements of a block body as `{ ... }`
   def self.block_to_js(statements, indentation="")

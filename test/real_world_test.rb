@@ -100,4 +100,34 @@ class JSAnalyzer::RealWorldTest < Minitest::Test
     JS
   end
 
+  # Found by comparing with acorn (rake oracle)
+
+  test 'a declarator without an initializer after one with' do
+    assert_parse('var a = 0, i;', 'var a = 0, i;')
+  end
+
+  test 'a prefix operator starts a new statement' do
+    assert_parse("a()\ndelete b.c\nawait d", "a();\ndelete b.c;\nawait d;")
+  end
+
+  test 'calling the result of new' do
+    assert_parse('new Function("a")(1)', 'new Function("a")(1);')
+  end
+
+  test 'with, debugger, new.target and yield*' do
+    assert_parse('with (o) x()', "with (o) {\n    x();\n};")
+    assert_parse('debugger', 'debugger;')
+    assert_parse('function f() { return new.target }', "function f() {\n    return new.target;\n};")
+    assert_parse('function* g() { yield* h() }', "function *g() {\n    yield* h();\n};")
+  end
+
+  test 'private names in expressions' do
+    assert_parse('x = #p in o', 'x = #p in o;')
+  end
+
+  test 'import attributes' do
+    assert_parse('import j from "./a.json" with { type: "json" }', 'import j from "./a.json" with {type: "json"};')
+    assert_parse('export { a } from "./a.json" with { type: "json" }', 'export { a } from "./a.json" with {type: "json"};')
+  end
+
 end

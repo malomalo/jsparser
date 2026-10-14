@@ -1,0 +1,9 @@
+{
+  "name": "jsanalyzer-oracle",
+  "private": true,
+  "description": "Compares JSAnalyzer's output with the original source using acorn",
+  "type": "module",
+  "dependencies": {
+    "acorn": "^8.19.0"
+  }
+}

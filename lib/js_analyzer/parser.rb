@@ -562,6 +562,13 @@ class JSAnalyzer::Parser
     !!peek(/[ \t]*(\/\/[^\n]*)?(\n|\}|\z)/)
   end
 
+  # `with { type: "json" }` (or the older `assert { ... }`) after the module
+  # specifier of an import or export. Returns [keyword, object] or nil.
+  def parse_import_attributes
+    return unless kw = gobble(/\p{Space}*(with|assert)(?![\p{Alpha}_\$\d])\p{Space}*\{/)&.[](1)
+    [kw, parse_object]
+  end
+
   # Parses `( expression )`, as in `if (...)`
   def parse_condition
     gobble!(/\p{Space}*\(/)
@@ -602,7 +609,7 @@ class JSAnalyzer::Parser
   #           PRECEDENCE), or a `;`; used to parse operands
   # top:      this is the start of a statement, so `function` and `class` are
   #           declarations rather than expressions
-  STATEMENT_KEYWORDS = %w(break class const continue do export for function if import let return switch throw try var while)
+  STATEMENT_KEYWORDS = %w(break class const continue debugger do export for function if import let return switch throw try var while with)
 
   def statement(no_in: false, min_prec: 0, top: false)
     stack = []
@@ -610,7 +617,7 @@ class JSAnalyzer::Parser
     while true
       newline = gobble(WHITESPACE)&.[](0)&.include?("\n")
 
-      if gob = gobble(/(\;|=>|\.\.\.|#{OPERATOR_REGEX}|\?|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|#{IDENTIFIER})/)
+      if gob = gobble(/(\;|=>|\.\.\.|#{OPERATOR_REGEX}|\?|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|\##{IDENTIFIER}|#{IDENTIFIER})/)
         if !stack.empty? && STATEMENT_KEYWORDS.include?(match)
           # A statement keyword after a complete expression starts the next
           # statement
@@ -665,6 +672,11 @@ class JSAnalyzer::Parser
           stack << klass
         
         when "new"
+          if gobble(/\p{Space}*\.\p{Space}*target(?![\p{Alpha}_\$\d])/)
+            stack << JSAnalyzer::Node::MetaProperty.new("new", "target")
+            next
+          end
+
           # new Callee(args), where Callee is a member expression and the
           # argument list is optional
           what = if gobble(/\p{Space}*\(/)
@@ -700,7 +712,8 @@ class JSAnalyzer::Parser
           case stack.last
           when JSAnalyzer::Node::Method, JSAnalyzer::Node::VariableReference,
                JSAnalyzer::Node::DotAccessor, JSAnalyzer::Node::BracketAccessor,
-               JSAnalyzer::Node::FunctionCall, JSAnalyzer::Node::Group
+               JSAnalyzer::Node::FunctionCall, JSAnalyzer::Node::Group,
+               JSAnalyzer::Node::Instantiation, JSAnalyzer::Node::TaggedTemplate
             stack << JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args)
           when nil
             # Arrow function parameters or a parenthesized expression
@@ -758,6 +771,9 @@ class JSAnalyzer::Parser
           end
         when NUMBER_TOKEN
           stack << JSAnalyzer::Node::Number.new(match)
+        when /\A\#/
+          # A private name on its own, as in `#x in obj`
+          stack << @scope.var(match)
         when '"', "'"
           quote = match
           stack << JSAnalyzer::Node::String.new(quoted_value(quote), quote)
@@ -770,7 +786,13 @@ class JSAnalyzer::Parser
         when "!", "~", "delete", "typeof", "void", "await"
           # Prefix operator
           m = match
-          stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
+          unless stack.empty?
+            # A prefix operator can't follow a value, so it starts the next
+            # statement (`a \n delete b`)
+            rewind(m.size)
+            return stack.pop
+          end
+          stack <<JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
         when "++", "--"
           # Prefix or postfix increment / decrement
           m = match
@@ -854,8 +876,8 @@ class JSAnalyzer::Parser
           declaration = @scope.declare(match)
           loop do
             target = parse_binding_target
-            initialization = expression if gobble(/\p{Space}*=(?![=>])/)
-            declaration.add(target, initialization)
+            init = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
+            declaration.add(target, init)
             break unless gobble(/\p{Space}*,/)
           end
           gobble(/\p{Space}*;/) unless terminated?
@@ -863,7 +885,13 @@ class JSAnalyzer::Parser
         when "return"
           return JSAnalyzer::Node::ReturnStatement.new(statement_ends? ? nil : statement)
         when "yield"
-          return JSAnalyzer::Node::Yield.new(statement_ends? ? nil : statement)
+          delegate = !!gobble(/\p{Space}*\*/) # yield* iterable
+          return JSAnalyzer::Node::Yield.new(statement_ends? ? nil : statement, delegate: delegate)
+        when "with"
+          return JSAnalyzer::Node::With.new(parse_condition, parse_body)
+        when "debugger"
+          gobble(/\p{Space}*;/)
+          return JSAnalyzer::Node::DebuggerStatement.new
         when "true", "false"
           stack <<  JSAnalyzer::Node::Boolean.new(match == "true")
         when "if"

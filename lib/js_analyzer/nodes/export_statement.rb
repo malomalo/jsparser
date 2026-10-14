@@ -58,10 +58,14 @@ class JSAnalyzer::Node::ExportStatement
   def from(file)
     @from = file
   end
+
+  # [keyword, object] for `with { type: "json" }`
+  attr_writer :attributes
   
   def to_js(indentation="")
     js = "export #{@variables.empty? ? '*' : @variables.map(&:to_js).join(', ')}"
     js << " from #{@from.to_js}" if @from
+    js << " #{@attributes[0]} #{@attributes[1].to_js}" if @attributes
     js
   end
   
@@ -111,7 +115,10 @@ class JSAnalyzer::Node::ExportStatement
       xport.export(parser.statement)
     end
 
-    xport.from(parser.statement) if parser.gobble(/\p{Space}+from/)
+    if parser.gobble(/\p{Space}+from/)
+      xport.from(parser.statement)
+      xport.attributes = parser.parse_import_attributes
+    end
     
     xport
   end

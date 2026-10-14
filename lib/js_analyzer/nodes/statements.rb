@@ -116,3 +116,42 @@ class JSAnalyzer::Node::LabeledStatement
   end
 
 end
+
+class JSAnalyzer::Node::With
+
+  attr_reader :object, :body
+
+  def initialize(object, body=[])
+    @object = object
+    @body = body
+  end
+
+  def to_js(indentation="")
+    "with (#{@object.to_js}) #{JSAnalyzer::Node.block_to_js(@body, indentation)}"
+  end
+
+end
+
+class JSAnalyzer::Node::DebuggerStatement
+
+  def to_js(indentation="")
+    "debugger"
+  end
+
+end
+
+# new.target (import.meta is parsed as a member access on import)
+class JSAnalyzer::Node::MetaProperty
+
+  attr_reader :meta, :property
+
+  def initialize(meta, property)
+    @meta = meta
+    @property = property
+  end
+
+  def to_js(indentation="")
+    "#{@meta}.#{@property}"
+  end
+
+end

@@ -50,15 +50,19 @@ class JSAnalyzer::Node::ImportStatement
     end
   end
   
-  def initialize(imports: [], from:)
+  # attributes is [keyword, object] for `with { type: "json" }`
+  def initialize(imports: [], from:, attributes: nil)
     @imports = imports
     @from = from
+    @attributes = attributes
   end
   
   def to_js(indentation="")
     js = "import #{@imports.map(&:to_js).join(', ')}"
     js << ' from ' if @imports.size > 0
     js << @from.to_js
+    js << " #{@attributes[0]} #{@attributes[1].to_js}" if @attributes
+    js
   end
   
   def self.parse(parser)
@@ -107,6 +111,6 @@ class JSAnalyzer::Node::ImportStatement
       gobble = parser.gobble!(/(?:\p{Space}*,)?\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
     end
 
-    JSAnalyzer::Node::ImportStatement.new(imports: imports, from: from)
+    JSAnalyzer::Node::ImportStatement.new(imports: imports, from: from, attributes: parser.parse_import_attributes)
   end
 end

@@ -14,6 +14,13 @@ Rake::TestTask.new do |t|
     t.verbose = true
 end
 
+desc "Parse and print every .js file in DIR and compare the result with acorn (rake oracle DIR=path)"
+task :oracle, [:dir] do |_, args|
+  $LOAD_PATH.unshift File.expand_path('lib', __dir__)
+  require_relative 'test/oracle/oracle'
+  JSAnalyzer::Oracle.run(args[:dir] || ENV['DIR'])
+end
+
 spec = Gem::Specification.load("jsanalyzer.gemspec")
 
 Gem::PackageTask.new(spec) do |pkg|
