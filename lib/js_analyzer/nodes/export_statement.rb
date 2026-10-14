@@ -69,59 +69,47 @@ class JSAnalyzer::Node::ExportStatement
     js
   end
   
+  # After `export`
   def self.parse(parser)
     xport = JSAnalyzer::Node::ExportStatement.new
-    gob = parser.gobble!(/\p{Space}*(\{|\*|default|#{JSAnalyzer::Parser::IDENTIFIER})/o)[1]
-    
-    case gob
-    when '*'
-      if parser.gobble(/\p{Space}+as/)
-        as = parser.gobble!(/\p{Space}+(\'|\"|#{JSAnalyzer::Parser::IDENTIFIER})/o)[1]
-        if as == "'" || as == '"'
-          xport.export_as(nil, parser.quoted_value(as))
-        else
-          xport.export_as(nil, as)
-        end
+    token = parser.advance
+
+    if token.punctuator?('*')
+      if parser.accept_name('as')
+        as = parser.advance
+        xport.export_as(nil, as.type == :string ? parser.string_node(as) : as.value)
       end
-    when 'default'
+    elsif token.name?('default')
       xport.export(Default.new(parser.statement))
-    when '{'
+    elsif token.punctuator?('{')
       glob = Glob.new
-      while (m = parser.gobble(/\p{Space}*(\/\*|\/\/|#{JSAnalyzer::Parser::IDENTIFIER})/o)) && (var_name = m[1])
-        case var_name
-        when "/*"
-          parser.scan_until(/\*\//)
-        when "//"
-          parser.scan_until_eol
+      loop do
+        break if parser.accept('}')
+        name = parser.expect_name
+        var = parser.scope.var(name.value, range: name.range)
+        glob << if parser.accept_name('as')
+          as = parser.advance
+          As.new(var, as.type == :string ? parser.string_node(as) : as.value)
         else
-          var = parser.scope.var(var_name, range: parser.group_range(m))
-          if parser.gobble(/\p{Space}+as/)
-            as = parser.gobble!(/\p{Space}+(\'|\"|#{JSAnalyzer::Parser::IDENTIFIER})/o)[1]
-            glob << if as == "'" || as == '"'
-              As.new(var, JSAnalyzer::Node::String.new(parser.quoted_value(as), as))
-            else
-              As.new(var, as)
-            end
-          else
-            glob << var
-          end
-          parser.gobble(/\p{Space}*,/)
+          var
         end
+        next if parser.accept(',')
+        parser.expect('}')
+        break
       end
-      parser.gobble!(/\p{Space}*}/)
       xport.export(glob)
-    else # 'const', 'let', 'var', 'function'
-      parser.rewind(gob.length)
-      xport.export(parser.statement)
+    else # const, let, var, function, class
+      parser.unread(token)
+      xport.export(parser.statement(top: true))
     end
 
-    if parser.gobble(/\p{Space}+from/)
-      xport.from(parser.statement)
+    if parser.accept_name('from')
+      xport.from(parser.expect_string)
       xport.attributes = parser.parse_import_attributes
     end
-    
+    parser.accept(';')
     xport
   end
-  
+
 end
 

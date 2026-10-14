@@ -130,4 +130,11 @@ class JSAnalyzer::RealWorldTest < Minitest::Test
     assert_parse('export { a } from "./a.json" with { type: "json" }', 'export { a } from "./a.json" with {type: "json"};')
   end
 
+  test 'a line starting with ( or [ continues the one before' do
+    # As in JavaScript, no semicolon is inserted before `(` or `[`
+    assert_parse("a = b\n(c)", "a = b(c);")
+    assert_parse("a = b\n[c]", "a = b[c];")
+    assert_parse("a = b\n++c", "a = b;\n++c;")
+  end
+
 end
