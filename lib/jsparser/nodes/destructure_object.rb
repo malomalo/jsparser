@@ -12,6 +12,14 @@ class JSParser::Node::DestructureObject
     @parts << { var: var, value: value, default: default, rest: rest, computed: computed }
   end
 
+  # Every variable the pattern declares, including in nested patterns
+  def declarations
+    @parts.flat_map do |part|
+      target = part[:rest] || !part[:value] ? part[:var] : part[:value]
+      JSParser::Node.declarations_in(target)
+    end
+  end
+
   def to_js(indentation="")
     js = String.new
     js << @type << " " if @type

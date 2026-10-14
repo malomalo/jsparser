@@ -15,6 +15,11 @@ class JSParser::Node::DestructureArray
     @parts << nil
   end
 
+  # Every variable the pattern declares, including in nested patterns
+  def declarations
+    @parts.compact.flat_map { JSParser::Node.declarations_in(it[:var]) }
+  end
+
   def to_js(indentation="")
     js = String.new
     js << @type << " " if @type

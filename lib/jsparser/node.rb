@@ -51,6 +51,16 @@ class JSParser::Node
   autoload :DebuggerStatement,      'jsparser/nodes/statements'
   autoload :MetaProperty,           'jsparser/nodes/statements'
 
+  # The VariableDeclarations in a declaration target: a declaration or a
+  # destructuring pattern
+  def self.declarations_in(target)
+    case target
+    when JSParser::Node::VariableDeclaration then [target]
+    when nil then []
+    else target.respond_to?(:declarations) ? target.declarations : []
+    end
+  end
+
   # Renders the statements of a block body as `{ ... }`
   def self.block_to_js(statements, indentation="")
     return "{ }" if statements.empty?

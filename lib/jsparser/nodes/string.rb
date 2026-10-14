@@ -1,5 +1,8 @@
 class JSParser::Node::String
 
+  # value is the text between the quotes, as written (escapes included)
+  attr_reader :value, :quote
+
   def initialize(value, quotes='"')
     @value = value
     @quote = quotes

@@ -5,7 +5,12 @@ class JSParser::Node::Class
   autoload :Setter, "jsparser/nodes/class/setter"
   autoload :InitializationBlock, "jsparser/nodes/class/initialization_block"
   
-  attr_reader :scope, :body
+  attr_reader :scope, :body, :extends
+
+  # The VariableDeclaration for the class's name, if it has one
+  def binding
+    @name
+  end
   
   # name is a [text, range] pair and extends the superclass expression. A
   # class declaration's name is declared in the enclosing scope; a class

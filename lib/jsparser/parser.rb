@@ -62,6 +62,7 @@ class JSParser::Parser
 
   def parse(source_type: :script)
     @scope = JSParser::Node::Program.new
+    @scope.source_type = source_type
     @scope.strict = source_type == :module || use_strict?
 
     parse_statement_list.each { @scope << it }

@@ -19,6 +19,8 @@ class JSParser::Node::ImportStatement
   end
   
   class Default
+    attr_reader :as
+
     def initialize(as)
       @as = as
     end
@@ -29,6 +31,8 @@ class JSParser::Node::ImportStatement
   end
   
   class Star
+    attr_reader :as
+
     def initialize(as)
       @as = as
     end
@@ -50,6 +54,11 @@ class JSParser::Node::ImportStatement
     end
   end
   
+  # One imported binding: `imported` is the name in the other module
+  # ("default", "*" for `* as ns`, or the name, which may be a quoted
+  # string), and `local` the VariableDeclaration it's bound to here
+  Specifier = Struct.new(:imported, :local)
+
   # attributes is [keyword, object] for `with { type: "json" }`
   def initialize(imports: [], from:, attributes: nil)
     @imports = imports
@@ -57,6 +66,29 @@ class JSParser::Node::ImportStatement
     @attributes = attributes
   end
   
+  # The module imported, as written between the quotes
+  def source
+    @from.value
+  end
+
+  # The names imported (empty for `import "module"`)
+  def specifiers
+    @imports.flat_map do |import|
+      case import
+      when Default then [Specifier.new('default', import.as)]
+      when Star then [Specifier.new('*', import.as)]
+      when Extract
+        import.imports.map do |entry|
+          if entry.is_a?(As)
+            Specifier.new(entry.name.is_a?(::String) ? entry.name : entry.name.value, entry.var)
+          else
+            Specifier.new(entry.text, entry)
+          end
+        end
+      end
+    end
+  end
+
   def to_js(indentation="")
     js = "import #{@imports.map(&:to_js).join(', ')}"
     js << ' from ' if @imports.size > 0

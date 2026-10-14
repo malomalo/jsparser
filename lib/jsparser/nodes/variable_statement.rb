@@ -16,6 +16,11 @@ class JSParser::Node::VariableStatement
     @declarators << [target, init]
   end
 
+  # Every variable declared, including those in destructuring patterns
+  def declarations
+    @declarators.flat_map { |target, _| JSParser::Node.declarations_in(target) }
+  end
+
   def to_js(indentation="")
     "#{@kind} " + @declarators.map do |target, init|
       init ? "#{target.to_js} = #{init.to_js}" : target.to_js

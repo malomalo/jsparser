@@ -134,6 +134,34 @@ function increment(step = 1) {
 `text` on a declaration or reference keeps the name as written, and `range` is
 where it is in the source, as byte offsets (`source.byteslice(range)`).
 
+## Modules
+
+```ruby
+program = JSParser.parse(<<~JS)
+  import render, { html as h } from "./view.js";
+  import * as utils from "./utils.js";
+  export function go() {}
+  export { render as default };
+  export * from "./more.js";
+JS
+
+program.module?          # => true
+program.dependencies     # => ["./view.js", "./utils.js", "./more.js"]
+program.exported_names   # => ["go", "default"]
+program.default_export?  # => true
+
+view = program.imports.first
+view.source                                      # => "./view.js"
+view.specifiers.map { [it.imported, it.local.name] }
+# => [["default", "render"], ["html", "h"]]
+```
+
+Each specifier's `local` is the import's `VariableDeclaration`, so
+`local.references.empty?` finds unused imports. Export statements have
+`exported_names`, `source` (for a re-export), `star?` (`export * from`),
+`default?` and `declaration` (an exported `const`, function or class).
+`exported_names` doesn't include the names of `export * from` modules.
+
 ## Speed
 
 On a sample of 13 files from npm packages (377 KB), parsing ran at 3.6 MB/s on

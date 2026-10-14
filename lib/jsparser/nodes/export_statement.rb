@@ -59,6 +59,45 @@ class JSParser::Node::ExportStatement
     @from = file
   end
 
+  # The module re-exported from (`export ... from "module"`), or nil
+  def source
+    @from&.value
+  end
+
+  # Whether it's `export * from "module"`, which exports every name the
+  # module does (they're not listed in exported_names)
+  def star?
+    @variables.empty?
+  end
+
+  # Whether it's the module's default export
+  def default?
+    exported_names.include?('default')
+  end
+
+  # The names exported: "default", the names in `export { ... }` (or their
+  # `as` names), the name in `export * as name`, or the variables an
+  # exported declaration declares
+  def exported_names
+    @variables.flat_map do |exported|
+      case exported
+      when Default then ['default']
+      when As then [name_of(exported.name)]
+      when Glob then exported.values.map { name_of(it.is_a?(As) ? it.name : it) }
+      when JSParser::Node::VariableStatement then exported.declarations.map(&:name)
+      when JSParser::Node::Method, JSParser::Node::Class then [exported.binding&.name].compact
+      else []
+      end
+    end
+  end
+
+  # The exported declaration (a VariableStatement, function or class), or nil
+  def declaration
+    @variables.find do |exported|
+      exported.is_a?(JSParser::Node::VariableStatement) || exported.is_a?(JSParser::Node::Method) || exported.is_a?(JSParser::Node::Class)
+    end
+  end
+
   # [keyword, object] for `with { type: "json" }`
   attr_writer :attributes
   
@@ -69,6 +108,19 @@ class JSParser::Node::ExportStatement
     js
   end
   
+  private
+
+  def name_of(name)
+    case name
+    when ::String then name
+    when JSParser::Node::String then name.value
+    when JSParser::Node::VariableReference then name.text
+    else name.to_js
+    end
+  end
+
+  public
+
   # After `export`
   def self.parse(parser)
     xport = JSParser::Node::ExportStatement.new
