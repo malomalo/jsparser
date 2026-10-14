@@ -211,15 +211,15 @@ class JSAnalyzer::Parser
       gobble(/\p{Space}+extends\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)&.[](1)
     end
     gobble!(/\p{Space}*\{/)
-    klass = JSAnalyzer::Node::Class.new(scope: scope, name: name, extends: extends)
-    
+    klass = JSAnalyzer::Node::Class.new(scope: @scope, name: name, extends: extends)
+
     begin
-      scope = klass.scope
+      @scope = klass.scope
       while part = parse_class_part
         klass.body << part
       end
     ensure
-      scope = klass.scope.parent_scope
+      @scope = klass.scope.parent_scope
     end
 
     gobble!(/\p{Space}*\}\p{Space}*;?/)
@@ -301,8 +301,7 @@ class JSAnalyzer::Parser
   end
 
   def statement(preceeded_by_open_arrow_fn=false)
-    @stack ||= []
-    stack_size = @stack.size
+    stack = []
     
     while true
       gobble(WHITESPACE)
@@ -310,17 +309,17 @@ class JSAnalyzer::Parser
       if gob = gobble(/(\;|=>|\?|\.\.\.|#{OPERATOR_REGEX}|\.|\[|\{|\(|\"|\'|\`|#{NUMBER}|#{IDENTIFIER})/)
         case match
         when ";"
-          return @stack.pop
+          return stack.pop
         when "export"
           return JSAnalyzer::Node::ExportStatement.parse(self)
         when "import"
           return JSAnalyzer::Node::ImportStatement.parse(self)
         when "async"
-          if !@stack.empty?
+          if !stack.empty?
             rewind(match.size)
-            return @stack.pop
+            return stack.pop
           else
-            statement.tap { |s| s.async = true }
+            return statement.tap { |s| s.async = true }
           end
           
         when "function"
@@ -335,88 +334,87 @@ class JSAnalyzer::Parser
         when "new"
           what = @scope.var(gobble!(/\p{Space}*(#{IDENTIFIER})/)[1])
           gobble!(/\p{Space}*\(/)
-          @stack << JSAnalyzer::Node::Instantiation.new(what, parse_args)
+          stack << JSAnalyzer::Node::Instantiation.new(what, parse_args)
         when "..."
           var = gobble(/\p{Space}*(#{IDENTIFIER})/)&.[](1)
           return JSAnalyzer::Node::SpreadOperator.new(var ? @scope.var(var) : nil)
         when "{"
-          if @stack.size > 0
+          if stack.size > 0
             rewind(1)
-            return @stack.pop
+            return stack.pop
           else
-            @stack << parse_object
+            stack << parse_object
           end
         when "("
-          case @stack.last
-          when JSAnalyzer::Node::Method, JSAnalyzer::Node::VariableReference
+          case stack.last
+          when JSAnalyzer::Node::Method, JSAnalyzer::Node::VariableReference,
+               JSAnalyzer::Node::DotAccessor, JSAnalyzer::Node::BracketAccessor,
+               JSAnalyzer::Node::FunctionCall
+            stack << JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args)
+          when nil
+            # Arrow function parameters or a parenthesized expression
             args = parse_args
-            @stack << if !@stack.empty?
-              JSAnalyzer::Node::FunctionCall.new(@stack.pop, args)
-            elsif peek(/\p{Space}*=>/)
-              args
-            else
-              args.first
-            end
+            stack << (peek(/\p{Space}*=>/) ? args : args.first)
           else
             rewind(1)
-            return @stack.pop
+            return stack.pop
           end
 
 
         when "?"
           if gob = gobble(/\p{Space}*(\.\[|\.\(|\.)/)&.[](1)
-            @stack << case gob
+            stack << case gob
             when '.('
-              JSAnalyzer::Node::FunctionCall.new(@stack.pop, parse_args, optional_chaining: true)
+              JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args, optional_chaining: true)
             when '.['
               key = statement
               gobble!(/\p{Space}*\]\p{Space}*/)
-              JSAnalyzer::Node::DotAccessor.new(object: @stack.pop, key: key, optional_chaining: true)
+              JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: key, optional_chaining: true)
             when '.'
-              JSAnalyzer::Node::DotAccessor.new(object: @stack.pop, key: gobble!(/#{IDENTIFIER}/)[0], optional_chaining: true)
+              JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/#{IDENTIFIER}/)[0], optional_chaining: true)
             end
           else
 
             a = statement
             gobble!(/\p{Space}*:/)
-            return JSAnalyzer::Node::Ternary.new(@stack.pop, a, statement)
+            return JSAnalyzer::Node::Ternary.new(stack.pop, a, statement)
           end
         when "."
-          if @stack.empty?
+          if stack.empty?
             raise 'Stack expected'
           else
-            @stack << JSAnalyzer::Node::DotAccessor.new(object: @stack.pop, key: gobble!(/#{IDENTIFIER}/)[0])
+            stack << JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/#{IDENTIFIER}/)[0])
           end
         when "["
-          @stack << if @stack.last.is_a?(JSAnalyzer::Node::VariableReference)
-            n = JSAnalyzer::Node::BracketAccessor.new(@stack.pop, statement)
+          stack << if stack.last.is_a?(JSAnalyzer::Node::VariableReference)
+            n = JSAnalyzer::Node::BracketAccessor.new(stack.pop, statement)
             gobble!(']')
             n
-          elsif @stack.size > 0
+          elsif stack.size > 0
             rewind(1)
-            return @stack.pop
+            return stack.pop
           else
             parse_array
           end
         when NUMBER
-          @stack << JSAnalyzer::Node::Number.new(match)
+          stack << JSAnalyzer::Node::Number.new(match)
         when '"', "'"
-          @stack << JSAnalyzer::Node::String.new(quoted_value(match), match)
+          stack << JSAnalyzer::Node::String.new(quoted_value(match), match)
         when "`"
-          @stack << tick_quoted_value
+          stack << tick_quoted_value
         when "!"
           # Left Unary operator
         when "++", "--"
           # Left or Right Unary operator
-          @stack << JSAnalyzer::Node::UnaryOperator.new(@stack.pop, match)
+          stack << JSAnalyzer::Node::UnaryOperator.new(stack.pop, match)
         when "+", "-"
           # Left Unary or Binary operator
-          @stack << if @stack.empty?
+          stack << if stack.empty?
             raise 'Stack expected'
           else
           m = match
           y = statement
-            JSAnalyzer::Node::BinaryOperator.new(left: @stack.pop, operation: m, right: y)
+            JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: m, right: y)
           end
         when "/"
           # Binary operator or comment
@@ -426,25 +424,25 @@ class JSAnalyzer::Parser
           when '*'
             [match, scan_until(/\*\//)]
           else
-           @stack <<  parse_regex
+           stack <<  parse_regex
           end
         # Assignment
         when '='
-          return JSAnalyzer::Node::BinaryOperator.new(left: @stack.pop, operation: match, right: statement)
+          return JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: match, right: statement)
         when '=>'
-          fn = JSAnalyzer::Node::Method.new(args: @stack.pop, scope: @scope, type: :arrow)
+          fn = JSAnalyzer::Node::Method.new(args: stack.pop, scope: @scope, type: :arrow)
           parse_function_body(fn, !!gobble(/\p{Space}*\{/))
           return fn
         when 'in', '*', "**", "%", "+=", "-=", "*=", "/=", "%=", "**=", "==", "===", "!=", "!==", '>', "<", ">=", '<=', '&&', '&&=', '||', '||='
           # Binary operator
           # 
           # 
-          if @stack.empty?
+          if stack.empty?
             raise 'Stack expected'
           else
             m = match
             y = statement
-            @stack << JSAnalyzer::Node::BinaryOperator.new(left: @stack.pop, operation: , right: @stack.pop)
+            stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: m, right: y)
           end
         when "for"
           gobble!(/\p{Space}*\(/)
@@ -495,7 +493,7 @@ class JSAnalyzer::Parser
             return y
           else
             declaration = @scope.declare(type)
-            @stack << declaration
+            stack << declaration
             initialization = statement if gobble(/\p{Space}*=/)
             declaration.add(name, initialization)
 
@@ -519,28 +517,28 @@ class JSAnalyzer::Parser
         when "yield"
           return JSAnalyzer::Node::Yield.new(statement)
         when "true", "false"
-          @stack <<  JSAnalyzer::Node::Boolean.new(match == "true")
+          stack <<  JSAnalyzer::Node::Boolean.new(match == "true")
         when "if"
           gobble!(/\p{Space}*\(/)
           condition = statement
           gobble!(/\p{Space}*\)\p{Space}*\{/)
-          @stack << JSAnalyzer::Node::If.new(condition, function_body)
+          stack << JSAnalyzer::Node::If.new(condition, function_body)
         when "else"
           gob = gobble!(/\p{Space}*({|if)/)[1]
           if gob == "if"
             gobble!(/\p{Space}*\(/)
             condition = statement
             gobble!(/\p{Space}*\)\p{Space}*\{/)
-            @stack.last.else_if(condition, function_body)
+            stack.last.else_if(condition, function_body)
           else
-            @stack.last.else(function_body)
+            stack.last.else(function_body)
           end
         when IDENTIFIER
-          if @stack.size > 0
+          if stack.size > 0
             rewind(match.size)
-            return @stack.pop
+            return stack.pop
           else
-            @stack << @scope.var(match)
+            stack << @scope.var(match)
           end
         when ","
           # TODO: comma operator
@@ -549,10 +547,10 @@ class JSAnalyzer::Parser
         end
       else
         gobble(/\p{Space}*;?/)
-        if @stack.size > stack_size+1
-          raise "stack issue: #{@stack.map(&:to_js).join("; ")}"
+        if stack.size > 1
+          raise "stack issue: #{stack.map(&:to_js).join("; ")}"
         end
-        return @stack.pop
+        return stack.pop
       end
     end
   end
@@ -612,7 +610,7 @@ class JSAnalyzer::Parser
       when "'"
         return single_quoted_value
       when IDENTIFIER
-        if gooble(/\p{Space}*\(/)
+        if gobble(/\p{Space}*\(/)
         else
           return match
         end
@@ -686,7 +684,7 @@ class JSAnalyzer::Parser
       end
     end
   
-    Regex.new(ret_value[..-2], gobble(/\p{Alpha}+/)&.[](0))
+    JSAnalyzer::Node::Regex.new(ret_value[..-2],gobble(/\p{Alpha}+/)&.[](0))
   end
   
   

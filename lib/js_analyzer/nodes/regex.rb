@@ -1,4 +1,4 @@
-class Regex
+class JSAnalyzer::Node::Regex
   def initialize(value, options)
     @value = value
     @options = options
