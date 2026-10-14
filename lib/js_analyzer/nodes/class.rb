@@ -7,10 +7,11 @@ class JSAnalyzer::Node::Class
   
   attr_reader :scope, :body
   
-  # name and extends are [text, range] pairs. A class declaration's name is
-  # declared in the enclosing scope; a class expression's only inside it.
+  # name is a [text, range] pair and extends the superclass expression. A
+  # class declaration's name is declared in the enclosing scope; a class
+  # expression's only inside it.
   def initialize(name: nil, extends: nil, scope:, expression: false)
-    @extends = scope.var(extends[0], range: extends[1]) if extends
+    @extends = extends
     @scope = JSAnalyzer::Node::Scope.new(scope: scope, kind: :class)
     @name = (expression ? @scope : scope).declare('class', name[0], range: name[1]) if name
     @body = []

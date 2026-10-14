@@ -376,5 +376,12 @@ class JSAnalyzer::ClassTest < Minitest::Test
         };
     JS
   end
-  
+
+  test 'class extends any member, call or new expression' do
+    assert_parse('class A extends B.C {}', "class A extends B.C {\n};")
+    assert_parse('class A extends mixin(B, C) {}', "class A extends mixin(B, C) {\n};")
+    assert_parse('x = class extends (y ? B : C) {}', "x = class extends (y ? B : C) {\n};")
+    assert_parse('class A extends B {}', "class A extends B {\n};")
+  end
+
 end

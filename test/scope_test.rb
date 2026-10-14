@@ -286,4 +286,9 @@ class JSAnalyzer::ScopeTest < Minitest::Test
     assert declarations(program, 'f').map(&:identifier).uniq.one?
   end
 
+  test 'references in a superclass expression are in the enclosing scope' do
+    program = JSAnalyzer.parse("const ns = {}; class A extends ns.Base {}")
+    assert_equal 1, declaration(program, 'ns').references.size
+  end
+
 end

@@ -512,13 +512,15 @@ class JSAnalyzer::Parser
     m = gobble(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)
     name = m && [m[1], group_range(m)]
 
-    extends = if name&.first == 'extends'
+    has_extends = if name&.first == 'extends'
       name = nil
-      m = gobble!(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)
-      [m[1], group_range(m)]
-    elsif (m = gobble(/\p{Space}+extends\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o))
-      [m[1], group_range(m)]
+      true
+    else
+      !!gobble(/\p{Space}+extends(?![\p{Alpha}_\$\d])/)
     end
+    # extends takes any member, call or new expression (B.C, mixin(A, B), ...),
+    # parsed here so its references are in the enclosing scope
+    extends = statement(min_prec: PREFIX_PRECEDENCE) if has_extends
     gobble!(/\p{Space}*\{/)
     klass = JSAnalyzer::Node::Class.new(scope: @scope, name: name, extends: extends, expression: expression)
 
