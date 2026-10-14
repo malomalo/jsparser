@@ -410,4 +410,17 @@ class JSParser::ClassTest < Minitest::Test
     JS
   end
 
+  test 'members on one line need a semicolon between them' do
+    ['class A { a b }', 'class A { accessor x = 1 }', 'class A { x = 1 y = 2 }'].each do |source|
+      assert_raises(JSParser::SyntaxError, source) { JSParser.parse(source) }
+    end
+    assert_parse("class A { x = 1\n y = 2; m() {} n() {} }", "class A {\n    x = 1;\n    y = 2;\n    m() { };\n    n() { };\n};")
+  end
+
+  test 'only async is a member name before a line break' do
+    assert_parse("class A { static\n x = 1 }", "class A {\n    static x = 1;\n};")
+    assert_parse("class A { get\n x() {} }", "class A {\n    get x() { };\n};")
+    assert_parse("class A { async\n x() {} }", "class A {\n    async;\n    x() { };\n};")
+  end
+
 end

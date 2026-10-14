@@ -540,6 +540,13 @@ class JSParser::Parser
         break if accept('}')
         part = parse_class_part
         klass.body << part if part
+
+        # Like statements, members on one line need a `;` between them
+        following = peek
+        last = @tokens.last
+        unless last.punctuator?(';') || last.punctuator?('}') || following.newline_before || following.punctuator?('}')
+          raise syntax_error("unexpected #{following.value.inspect}", following)
+        end
       end
     ensure
       klass.scope.close!
@@ -556,8 +563,10 @@ class JSParser::Parser
     return if token.punctuator?(';')
 
     # static, get, set and async are member names when nothing follows them,
-    # e.g. `get(key) {}` or `static = 1`
-    if token.name_in?(CLASS_MODIFIERS) && (peek.punctuator_in?(CLASS_MEMBER_ENDS) || peek.newline_before)
+    # e.g. `get(key) {}` or `static = 1`. Only async can't be followed by a
+    # line break (`static\n x = 1` is the static field x).
+    if token.name_in?(CLASS_MODIFIERS) &&
+       (peek.punctuator_in?(CLASS_MEMBER_ENDS) || (token.name?('async') && peek.newline_before))
       return parse_class_member(token.value, false, false)
     end
 
