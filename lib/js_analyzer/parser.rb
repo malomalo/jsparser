@@ -135,7 +135,7 @@ class JSAnalyzer::Parser
     raise syntax_error("unexpected #{@source[@index].inspect}") unless eos?
 
     @scope.source = @source
-    @scope.resolve!
+    @scope.close!
     @scope
   end
 
@@ -186,7 +186,10 @@ class JSAnalyzer::Parser
     @scope = scope
     [yield, scope]
   ensure
-    @scope = scope.parent_scope if scope
+    if scope
+      scope.close!
+      @scope = scope.parent_scope
+    end
   end
 
   # The source range of a match's group
@@ -195,8 +198,9 @@ class JSAnalyzer::Parser
   end
 
   # Arrow function parameters, which are parsed as an expression until the
-  # `=>`. mark is where the scope's references and children were before
-  # them, so they can be moved into the arrow function's scope.
+  # `=>`. mark is where the scope's references, children and pending
+  # references were before them, so they can be moved into the arrow
+  # function's scope.
   ArrowParams = Struct.new(:args, :mark)
 
   # Turns the variable references in a parameter list parsed as expressions
@@ -413,6 +417,7 @@ class JSAnalyzer::Parser
         fn.body << expression
       end
     ensure
+      fn.scope.close!
       @scope = fn.scope.parent_scope
     end
     gobble!(/\p{Space}*\}/) if brackets
@@ -424,6 +429,7 @@ class JSAnalyzer::Parser
     @scope = JSAnalyzer::Node::Scope.new(scope: @scope, statements: statements)
     
   ensure
+    @scope.close!
     @scope = @scope.parent_scope
   end
   
@@ -463,6 +469,7 @@ class JSAnalyzer::Parser
         klass.body << part
       end
     ensure
+      klass.scope.close!
       @scope = klass.scope.parent_scope
     end
 
@@ -506,6 +513,7 @@ class JSAnalyzer::Parser
         @scope = block
         parse_statement_list.each { block << it }
       ensure
+        block.close!
         @scope = block.parent_scope
       end
       gobble!(/\p{Space}*\}\p{Space}*;?/)
@@ -796,7 +804,7 @@ class JSAnalyzer::Parser
             stack << JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args)
           when nil
             # Arrow function parameters or a parenthesized expression
-            mark = [@scope.references.size, @scope.children.size]
+            mark = [@scope.references.size, @scope.children.size, @scope.pending.size]
             args = parse_args
             stack << (peek(/\p{Space}*=>/) ? ArrowParams.new(args, mark) : JSAnalyzer::Node::Group.new(args))
           else
@@ -918,15 +926,20 @@ class JSAnalyzer::Parser
           when ArrowParams
             [params.args, params.mark]
           when JSAnalyzer::Node::VariableReference # x => ...
-            [[params], [@scope.references.index { it.equal?(params) } || @scope.references.size, @scope.children.size]]
+            [[params], [@scope.references.index { it.equal?(params) } || @scope.references.size,
+                        @scope.children.size,
+                        @scope.pending.index { it.equal?(params) } || @scope.pending.size]]
           else
-            [Array(params), [@scope.references.size, @scope.children.size]]
+            [Array(params), [@scope.references.size, @scope.children.size, @scope.pending.size]]
           end
 
           # The parameters were parsed in this scope; move what they declared
-          # and referenced into the arrow function's
+          # and referenced into the arrow function's. That includes references
+          # passed up by scopes inside them that have already closed, such as
+          # a function in a default value.
           references = @scope.references.slice!(mark[0]..) || []
           children = @scope.children.slice!(mark[1]..) || []
+          pending = @scope.pending.slice!(mark[2]..) || []
           fn = JSAnalyzer::Node::Method.new(scope: @scope, type: :arrow)
           children.each { it.parent_scope = fn.scope; fn.scope.children << it }
           bound = []
@@ -935,6 +948,9 @@ class JSAnalyzer::Parser
             next if bound.any? { it.equal?(reference) }
             reference.scope = fn.scope
             fn.scope.references << reference
+          end
+          pending.each do |reference|
+            fn.scope.pending << reference unless bound.any? { it.equal?(reference) }
           end
 
           parse_function_body(fn, !!gobble(/\p{Space}*\{/))

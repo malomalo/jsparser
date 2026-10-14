@@ -4,8 +4,8 @@
 #   kind  :program, :function, :arrow, :class, :static_block, :block or
 #         :catch
 #
-# References are resolved once the whole program is parsed (see resolve!),
-# since JavaScript lets a variable be used before it's declared.
+# References are resolved as each scope closes (see close!), since
+# JavaScript lets a variable be used before it's declared.
 class JSAnalyzer::Node::Scope
 
   attr_reader :statements, :kind, :declarations, :references, :children
@@ -19,6 +19,7 @@ class JSAnalyzer::Node::Scope
     @kind = kind
     @declarations = {}
     @references = []
+    @pending = []
     @children = []
     @parent_scope = scope
     scope&.children&.<<(self)
@@ -40,6 +41,7 @@ class JSAnalyzer::Node::Scope
   def var(name, range: nil)
     reference = JSAnalyzer::Node::VariableReference.new(name, self, range: range)
     @references << reference
+    @pending << reference
     reference
   end
 
@@ -73,15 +75,28 @@ class JSAnalyzer::Node::Scope
     VAR_SCOPES.include?(@kind) || @parent_scope.nil? ? self : @parent_scope.var_scope
   end
 
-  # Points every reference in this scope, and those inside it, at its
-  # declaration
-  def resolve!
-    @references.each do |reference|
-      declaration = lookup(reference.text) || implicit_declaration(reference.text)
-      reference.declaration = declaration
-      declaration.references << reference
+  # References that haven't been resolved yet: this scope's own, and those
+  # passed up from scopes inside it that have closed
+  attr_reader :pending
+
+  # Resolves the pending references once everything in this scope has been
+  # parsed, so its declarations are complete, including hoisted ones (in
+  # `f(); function f() {}` the call is parsed first). Those not declared here
+  # are passed up to the parent; at the program they become implicit globals.
+  def close!
+    @pending.each do |reference|
+      declaration = @declarations[reference.text]
+      declaration ||= declare_implicit('arguments', 'arguments') if reference.text == 'arguments' && @kind == :function
+      declaration ||= declare_implicit('global', reference.text) unless @parent_scope
+
+      if declaration
+        reference.declaration = declaration
+        declaration.references << reference
+      else
+        @parent_scope.pending << reference
+      end
     end
-    @children.each(&:resolve!)
+    @pending = []
   end
 
   def <<(statement)
@@ -94,22 +109,6 @@ class JSAnalyzer::Node::Scope
     @declarations[name] ||= JSAnalyzer::Node::VariableDeclaration.new(
       kind, JSAnalyzer::Node::Identifier.new(name), scope: self, implicit: true
     )
-  end
-
-  private
-
-  # `arguments` belongs to the nearest non-arrow function; anything else that
-  # is never declared is a global
-  def implicit_declaration(name)
-    if name == 'arguments' && (function = scopes_up.find { it.kind == :function })
-      function.declare_implicit('arguments', name)
-    else
-      program.declare_implicit('global', name)
-    end
-  end
-
-  def scopes_up
-    @parent_scope ? [self] + @parent_scope.send(:scopes_up) : [self]
   end
 
 end

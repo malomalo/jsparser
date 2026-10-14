@@ -149,4 +149,23 @@ class JSAnalyzer::ScopeTest < Minitest::Test
     assert_equal %w(a b c d f), block.variables_in_scope.keys.sort
   end
 
+  test 'references are resolved as each scope closes' do
+    # Later declarations in an outer scope, used by a closure parsed first
+    program = JSAnalyzer.parse("function f() { return () => later + early; } let early = 1; var later = 2;")
+    assert_equal 1, declaration(program, 'early').references.size
+    assert_equal 1, declaration(program, 'later').references.size
+    assert(program.scopes.all? { it.pending.empty? }, "nothing is left unresolved")
+  end
+
+  test 'a function in an arrow default value sees the arrow parameters' do
+    program = JSAnalyzer.parse("const f = (a, b = () => a) => b;")
+    assert_equal 1, declaration(program, 'a').references.size
+    assert_nil program.declarations['a']
+  end
+
+  test 'arguments in an arrow function belongs to the enclosing function' do
+    program = JSAnalyzer.parse("function f() { return () => arguments; }")
+    assert_equal :function, declaration(program, 'arguments').scope.kind
+  end
+
 end
