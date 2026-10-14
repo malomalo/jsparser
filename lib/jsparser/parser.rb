@@ -131,6 +131,12 @@ class JSParser::Parser
     @tokens.syntax_error(message, token.start)
   end
 
+  # node, which must be there: expressions return nil when there's nothing
+  # to parse (`let x = ;`), which is a syntax error where a value is needed
+  def required(node)
+    node || raise(syntax_error("expected an expression"))
+  end
+
   # Whether the last token consumed was a `;`. Statements consume the `;` that
   # ends them, so the clauses of a for loop check this before expecting one.
   def terminated?
@@ -224,7 +230,7 @@ class JSParser::Parser
   # Parses `( expression )`, as in `if (...)`
   def parse_condition
     expect('(')
-    condition = statement
+    condition = required(statement)
     expect(')')
     condition
   end
@@ -332,12 +338,12 @@ class JSParser::Parser
       if token.punctuator?('}')
         return obj
       elsif token.punctuator?('...')
-        obj.spread(expression)
+        obj.spread(required(expression))
       elsif token.punctuator?('[')
-        key = statement
+        key = required(statement)
         expect(']')
         if accept(':')
-          obj.add(key, expression)
+          obj.add(key, required(expression))
         else
           expect('(')
           obj.shorthand(parse_function(key, false, false, :class))
@@ -348,14 +354,14 @@ class JSParser::Parser
           obj.shorthand(parse_function(key, false, false, :class, computed: false))
         else
           expect(':')
-          obj.add(key, expression)
+          obj.add(key, required(expression))
         end
       elsif token.type == :number
         if accept('(')
           obj.shorthand(parse_function(token.value, false, false, :class))
         else
           expect(':')
-          obj.add(token.value, expression)
+          obj.add(token.value, required(expression))
         end
       elsif token.punctuator?('*')
         key, computed = parse_property_key
@@ -379,12 +385,12 @@ class JSParser::Parser
           next
         elsif accept('=')
           # `{ key = value }`, only valid as a destructuring pattern
-          obj.add_default(@scope.var(key, range: token.range), expression)
+          obj.add_default(@scope.var(key, range: token.range), required(expression))
         elsif accept('(')
           obj.shorthand(parse_function(key, false, false, :class))
         else
           expect(':')
-          obj.add(key, expression)
+          obj.add(key, required(expression))
         end
       else
         raise syntax_error("unexpected #{token.value.inspect}", token)
@@ -411,7 +417,7 @@ class JSParser::Parser
       [string_node(token), false]
     else
       raise syntax_error("expected a property name", token) unless token.punctuator?('[')
-      key = statement
+      key = required(statement)
       expect(']')
       [key, true]
     end
@@ -436,7 +442,7 @@ class JSParser::Parser
         rest = accept('...')
         param = parse_binding_target('param')
         if accept('=')
-          param = JSParser::Node::BinaryOperator.new(left: param, operation: '=', right: expression)
+          param = JSParser::Node::BinaryOperator.new(left: param, operation: '=', right: required(expression))
         end
         fn.args << (rest ? JSParser::Node::SpreadOperator.new(param) : param)
         next if accept(',')
@@ -472,7 +478,7 @@ class JSParser::Parser
       else
         # Arrow function with an expression body
         fn.expression_body = true
-        fn.body << expression
+        fn.body << required(expression)
       end
     ensure
       fn.body_scope.close! unless fn.body_scope.equal?(fn.scope)
@@ -487,7 +493,7 @@ class JSParser::Parser
     args = []
     loop do
       break if accept(')')
-      args << expression
+      args << required(expression)
       next if accept(',')
       expect(')')
       break
@@ -505,7 +511,7 @@ class JSParser::Parser
         next
       end
 
-      array.members << expression
+      array.members << required(expression)
       next if accept(',')
       expect(']')
       break
@@ -522,7 +528,7 @@ class JSParser::Parser
 
     # extends takes any member, call or new expression (B.C, mixin(A, B), ...),
     # parsed here so its references are in the enclosing scope
-    extends = statement(min_prec: PREFIX_PRECEDENCE) if accept_name('extends')
+    extends = required(statement(min_prec: PREFIX_PRECEDENCE)) if accept_name('extends')
     expect('{')
     klass = JSParser::Node::Class.new(scope: @scope, name: name, extends: extends, expression: expression)
 
@@ -590,7 +596,7 @@ class JSParser::Parser
     if accept('(')
       JSParser::Node::Class::Field.new(parse_function(name, async, generator, :class, computed: computed))
     elsif accept('=')
-      JSParser::Node::Class::Field.new(name, statement, computed: computed)
+      JSParser::Node::Class::Field.new(name, required(statement), computed: computed)
     else
       # A field without an initializer, ended by `;` or a new line
       accept(';')
@@ -626,7 +632,7 @@ class JSParser::Parser
         # Only a plain name can be used without `: target`.
         expect(':')
         value = parse_binding_target(kind)
-        default = accept('=') ? expression : nil
+        default = accept('=') ? required(expression) : nil
         pattern.add(key[0], value, default: default, computed: key[1])
       else
         token = expect_name
@@ -638,7 +644,7 @@ class JSParser::Parser
           key = @scope.declare(kind, token.value, range: token.range)
           value = nil
         end
-        default = accept('=') ? expression : nil
+        default = accept('=') ? required(expression) : nil
         pattern.add(key, value, default: default)
       end
       next if accept(',')
@@ -658,7 +664,7 @@ class JSParser::Parser
     elsif token.type == :number
       [advance.value, false]
     elsif accept('[')
-      key = expression
+      key = required(expression)
       expect(']')
       [key, true]
     end
@@ -679,7 +685,7 @@ class JSParser::Parser
       if rest
         pattern.add(target, rest: true)
       else
-        pattern.add(target, (expression if accept('=')))
+        pattern.add(target, (required(expression) if accept('=')))
       end
       next if accept(',')
       expect(']')
@@ -704,7 +710,7 @@ class JSParser::Parser
       node << text unless text.empty?
       return node if kind == :end
 
-      node << statement
+      node << required(statement)
       expect('}')
     end
   end
@@ -718,7 +724,7 @@ class JSParser::Parser
     prec = PRECEDENCE.fetch(op)
     return false if prec < min_prec || (no_in && op == 'in')
 
-    right = statement(min_prec: RIGHT_ASSOCIATIVE.include?(op) ? prec : prec + 1)
+    right = required(statement(min_prec: RIGHT_ASSOCIATIVE.include?(op) ? prec : prec + 1))
     left = stack.pop
     # `x = 1` only writes x; `x += 1` and `x ||= y` read it too
     mark_written(left, read: op != '=') if ASSIGNMENT_OPERATORS.include?(op)
@@ -815,7 +821,7 @@ class JSParser::Parser
       stack << if accept('(')
         JSParser::Node::FunctionCall.new(stack.pop, parse_args, optional_chaining: true)
       elsif accept('[')
-        key = statement
+        key = required(statement)
         expect(']')
         JSParser::Node::BracketAccessor.new(stack.pop, key, optional_chaining: true)
       else
@@ -824,9 +830,9 @@ class JSParser::Parser
     when '?'
       return end_expression(token, stack) if PRECEDENCE['?'] < min_prec
 
-      a = statement
+      a = required(statement)
       expect(':')
-      b = statement(min_prec: PRECEDENCE['='])
+      b = required(statement(min_prec: PRECEDENCE['=']))
       stack << JSParser::Node::Ternary.new(stack.pop, a, b)
     when '.'
       raise syntax_error("unexpected \".\"", token) if stack.empty?
@@ -835,10 +841,10 @@ class JSParser::Parser
       stack << if stack.empty?
         parse_array
       else
-        JSParser::Node::BracketAccessor.new(stack.pop, statement).tap { expect(']') }
+        JSParser::Node::BracketAccessor.new(stack.pop, required(statement)).tap { expect(']') }
       end
     when '...'
-      Return.new(JSParser::Node::SpreadOperator.new(expression))
+      Return.new(JSParser::Node::SpreadOperator.new(required(expression)))
     when '!', '~'
       prefix_operator(token, stack)
     when '++', '--'
@@ -846,7 +852,7 @@ class JSParser::Parser
       return end_expression(token, stack) if token.newline_before && !stack.empty?
 
       prefix = stack.empty?
-      operand = prefix ? statement(min_prec: PREFIX_PRECEDENCE) : stack.pop
+      operand = prefix ? required(statement(min_prec: PREFIX_PRECEDENCE)) : stack.pop
       mark_written(operand, read: true) # x++ and ++x read and write x
       stack << if prefix
         JSParser::Node::PrefixOperator.new(value, operand)
@@ -855,7 +861,7 @@ class JSParser::Parser
       end
     when '+', '-'
       if stack.empty?
-        stack << JSParser::Node::PrefixOperator.new(value, statement(min_prec: PREFIX_PRECEDENCE))
+        stack << JSParser::Node::PrefixOperator.new(value, required(statement(min_prec: PREFIX_PRECEDENCE)))
       elsif !binary_operator(stack, value, min_prec, no_in)
         end_expression(token, stack)
       end
@@ -888,7 +894,7 @@ class JSParser::Parser
     # A prefix operator can't follow a value, so it starts the next statement
     # (`a \n delete b`)
     return end_expression(token, stack) unless stack.empty?
-    stack << JSParser::Node::PrefixOperator.new(token.value, statement(min_prec: PREFIX_PRECEDENCE))
+    stack << JSParser::Node::PrefixOperator.new(token.value, required(statement(min_prec: PREFIX_PRECEDENCE)))
   end
 
   def arrow_function(stack)
@@ -985,7 +991,7 @@ class JSParser::Parser
       node = JSParser::Node::VariableStatement.new(value)
       loop do
         target = parse_binding_target(node.kind)
-        init = accept('=') ? expression : nil
+        init = accept('=') ? required(expression) : nil
         node.add(target, init)
         break unless accept(',')
       end
@@ -1023,7 +1029,7 @@ class JSParser::Parser
       accept(';')
       Return.new(JSParser::Node::DoWhile.new(body, condition))
     when 'throw'
-      Return.new(JSParser::Node::ThrowStatement.new(statement))
+      Return.new(JSParser::Node::ThrowStatement.new(required(statement)))
     when 'try'
       Return.new(parse_try)
     when 'switch'
@@ -1082,7 +1088,7 @@ class JSParser::Parser
       if accept('.')
         callee = JSParser::Node::DotAccessor.new(object: callee, key: member_name)
       elsif accept('[')
-        callee = JSParser::Node::BracketAccessor.new(callee, statement).tap { expect(']') }
+        callee = JSParser::Node::BracketAccessor.new(callee, required(statement)).tap { expect(']') }
       else
         break
       end
@@ -1101,7 +1107,7 @@ class JSParser::Parser
 
       if (kind = accept_name_in(FOR_IN_OF))
         mark_written(initialization) # for (x of xs) assigns x
-        right = statement
+        right = required(statement)
         expect(')')
         next JSParser::Node::ForIn.new(initialization, kind.value, right, parse_body, await: is_await)
       end

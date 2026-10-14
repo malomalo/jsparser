@@ -149,6 +149,19 @@ class JSParser::RealWorldTest < Minitest::Test
     assert_parse("do x(); while (y) z()", "do {\n    x();\n} while (y);\nz();")
   end
 
+  test 'a missing expression is a syntax error' do
+    ['let x = ;', 'x = ;', 'a + ;', 'a ? : b', 'f(a, , b)', '!;', 'if () {}', 'o = { a: }',
+     '[...]', 'x => ;', 'throw;', 'class A { x = ; }', '`${}`', 'a[]', 'function f(a = ) {}',
+     'const { a = } = o', 'for (x of ) {}', 'export default;'].each do |source|
+      error = assert_raises(JSParser::SyntaxError, source) { JSParser.parse(source) }
+      assert_match(/expected/, error.message, source)
+    end
+    # Where nothing is needed
+    ['let x;', 'return;', '[,]', '[1,]', 'for (;;) {}', 'f()', 'function f() { return }'].each do |source|
+      JSParser.parse(source)
+    end
+  end
+
   test 'a line starting with ( or [ continues the one before' do
     # As in JavaScript, no semicolon is inserted before `(` or `[`
     assert_parse("a = b\n(c)", "a = b(c);")

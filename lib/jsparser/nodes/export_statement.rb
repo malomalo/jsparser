@@ -80,7 +80,7 @@ class JSParser::Node::ExportStatement
         xport.export_as(nil, as.type == :string ? parser.string_node(as) : as.value)
       end
     elsif token.name?('default')
-      xport.export(Default.new(parser.statement))
+      xport.export(Default.new(parser.required(parser.statement)))
     elsif token.punctuator?('{')
       entries = [] # [name token, `as` name or nil]
       loop do
