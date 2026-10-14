@@ -42,7 +42,6 @@ class JSParser::Parser
   RIGHT_ASSOCIATIVE = ASSIGNMENT_OPERATORS + %w(**)
 
   ACCESSORS = %w(get set).freeze
-  IMPORT_ATTRIBUTE_KEYWORDS = %w(with assert).freeze
   THIS_OR_SUPER = %w(this super).freeze
   FOR_IN_OF = %w(in of).freeze
   SWITCH_CASES = %w(case default).freeze
@@ -673,10 +672,17 @@ class JSParser::Parser
     pattern
   end
 
-  # `with { type: "json" }` (or the older `assert { ... }`) after the module
-  # specifier of an import or export. Returns [keyword, object] or nil.
+  # `with { type: "json" }` after the module specifier of an import or export.
+  # Returns [keyword, object] or nil.
   def parse_import_attributes
-    return unless (keyword = accept_name_in(IMPORT_ATTRIBUTE_KEYWORDS))
+    token = peek
+    if token.name?('assert') && !token.newline_before
+      # Import assertions were replaced by import attributes and are no
+      # longer JavaScript (acorn and Babel 8 reject them)
+      raise syntax_error("import assertions (`assert { ... }`) aren't supported; use `with { ... }`")
+    end
+
+    return unless (keyword = accept_name('with'))
     expect('{')
     [keyword.value, parse_object]
   end

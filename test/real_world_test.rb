@@ -131,6 +131,13 @@ class JSParser::RealWorldTest < Minitest::Test
     assert_parse('export { a } from "./a.json" with { type: "json" }', 'export { a } from "./a.json" with {type: "json"};')
   end
 
+  test 'import assertions are no longer supported' do
+    error = assert_raises(JSParser::SyntaxError) { JSParser.parse('import j from "./a.json" assert { type: "json" }') }
+    assert_match(/use `with/, error.message)
+    # On the next line, `assert` is just the start of another statement
+    assert_parse("import j from './a.json'\nassert(j)", "import j from './a.json';\nassert(j);")
+  end
+
   test 'a line starting with ( or [ continues the one before' do
     # As in JavaScript, no semicolon is inserted before `(` or `[`
     assert_parse("a = b\n(c)", "a = b(c);")
