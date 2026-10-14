@@ -398,4 +398,16 @@ class JSParser::ClassTest < Minitest::Test
     assert_parse('class A extends B {}', "class A extends B {\n};")
   end
 
+  test 'quoted member names stay quoted' do
+    assert_parse('class A { "x-y"() {} "f" = 1; static "s"; get "g"() {} [key]() {} }', <<~JS)
+        class A {
+            "x-y"() { };
+            "f" = 1;
+            static "s";
+            get "g"() { };
+            [key]() { };
+        };
+    JS
+  end
+
 end

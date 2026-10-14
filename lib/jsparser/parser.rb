@@ -577,22 +577,24 @@ class JSParser::Parser
       generator = token.punctuator?('*')
       token = advance if generator
       unread(token)
-      key, = parse_property_key
-      return parse_class_member(key, async, generator)
+      key, computed = parse_property_key
+      return parse_class_member(key, async, generator, computed: computed)
     end
     JSParser::Node::Class::Field.new(member)
   end
 
   # A method or field named `name`, after its name
-  def parse_class_member(name, async, generator)
+  # computed: the name is a computed key (`[expr]`) rather than a name,
+  # quoted name or number
+  def parse_class_member(name, async, generator, computed: false)
     if accept('(')
-      JSParser::Node::Class::Field.new(parse_function(name, async, generator, :class))
+      JSParser::Node::Class::Field.new(parse_function(name, async, generator, :class, computed: computed))
     elsif accept('=')
-      JSParser::Node::Class::Field.new(name, statement)
+      JSParser::Node::Class::Field.new(name, statement, computed: computed)
     else
       # A field without an initializer, ended by `;` or a new line
       accept(';')
-      JSParser::Node::Class::Field.new(name)
+      JSParser::Node::Class::Field.new(name, computed: computed)
     end
   end
 
