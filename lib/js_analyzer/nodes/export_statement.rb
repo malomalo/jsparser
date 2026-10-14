@@ -71,12 +71,12 @@ class JSAnalyzer::Node::ExportStatement
   
   def self.parse(parser)
     xport = JSAnalyzer::Node::ExportStatement.new
-    gob = parser.gobble!(/\p{Space}*(\{|\*|default|#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
+    gob = parser.gobble!(/\p{Space}*(\{|\*|default|#{JSAnalyzer::Parser::IDENTIFIER})/o)[1]
     
     case gob
     when '*'
       if parser.gobble(/\p{Space}+as/)
-        as = parser.gobble!(/\p{Space}+(\'|\"|#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
+        as = parser.gobble!(/\p{Space}+(\'|\"|#{JSAnalyzer::Parser::IDENTIFIER})/o)[1]
         if as == "'" || as == '"'
           xport.export_as(nil, parser.quoted_value(as))
         else
@@ -87,7 +87,7 @@ class JSAnalyzer::Node::ExportStatement
       xport.export(Default.new(parser.statement))
     when '{'
       glob = Glob.new
-      while (m = parser.gobble(/\p{Space}*(\/\*|\/\/|#{JSAnalyzer::Parser::IDENTIFIER})/)) && (var_name = m[1])
+      while (m = parser.gobble(/\p{Space}*(\/\*|\/\/|#{JSAnalyzer::Parser::IDENTIFIER})/o)) && (var_name = m[1])
         case var_name
         when "/*"
           parser.scan_until(/\*\//)
@@ -96,7 +96,7 @@ class JSAnalyzer::Node::ExportStatement
         else
           var = parser.scope.var(var_name, range: parser.group_range(m))
           if parser.gobble(/\p{Space}+as/)
-            as = parser.gobble!(/\p{Space}+(\'|\"|#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
+            as = parser.gobble!(/\p{Space}+(\'|\"|#{JSAnalyzer::Parser::IDENTIFIER})/o)[1]
             glob << if as == "'" || as == '"'
               As.new(var, JSAnalyzer::Node::String.new(parser.quoted_value(as), as))
             else

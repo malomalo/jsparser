@@ -24,7 +24,7 @@ class JSAnalyzer::Parser
   # searching the rest of the source), and skips comments first when r starts
   # with optional whitespace.
   def gobble(r)
-    r = Regexp.new(Regexp.escape(r)) if r.is_a?(::String)
+    r = LITERAL[r] if r.is_a?(::String)
     skip_comments if skips_comments?(r)
     m = @source.match(anchored(r), @index)
     return unless m
@@ -35,7 +35,10 @@ class JSAnalyzer::Parser
     m
   end
 
-  COMMENT = /\G\p{Space}*(?:\/\/[^\n]*|\/\*.*?\*\/)/m
+  # The `|(?!)` alternative never matches; it stops Onigmo from first
+  # searching the rest of the source for a literal every match needs (here
+  # the `/`), which made each attempt cost the distance to the next one
+  COMMENT = /\G(?:\p{Space}*(?:\/\/[^\n]*|\/\*.*?\*\/)|(?!))/m
 
   # Comments can appear anywhere whitespace can, so patterns that allow
   # leading whitespace skip comments too
@@ -49,16 +52,28 @@ class JSAnalyzer::Parser
     end
   end
 
+  # Patterns are regex literals compiled once (with /o where they
+  # interpolate), so the anchored versions are cached by the pattern itself.
+  # `|(?!)` never matches; see COMMENT.
+  ANCHORED = {}.compare_by_identity
+
   def anchored(r)
-    (@anchored ||= {})[[r.source, r.options]] ||= Regexp.new("\\G(?:#{r.source})", r.options)
+    ANCHORED[r] ||= Regexp.new("\\G(?:#{r.source}|(?!))", r.options)
   end
+
+  # Regexes matching a literal string, as in gobble("${")
+  LITERAL = Hash.new { |cache, string| cache[string] = Regexp.new(Regexp.escape(string)) }
   
   # Reads a string literal's contents up to the closing quote_char, keeping
   # escape sequences as written. (StreamParser's version removes the
   # backslashes, so `"a\"b"` would print back as `"a"b"`.)
-  def quoted_value(quote_char = '"', _escape_chars = nil)
+  QUOTED = Hash.new do |cache, quote_char|
     q = Regexp.escape(quote_char)
-    m = gobble(/((?:[^#{q}\\\r\n]|\\.)*)#{q}/m)
+    cache[quote_char] = /((?:[^#{q}\\\r\n]|\\.)*)#{q}/m
+  end
+
+  def quoted_value(quote_char = '"', _escape_chars = nil)
+    m = gobble(QUOTED[quote_char])
     raise syntax_error("unterminated string") unless m
     m[1]
   end
@@ -124,7 +139,7 @@ class JSAnalyzer::Parser
   WHITESPACE = /\p{Space}+/
   IDENTIFIER = /[\p{Alpha}_\$][\p{Alpha}_\$\d]*/
   NUMBER = /0[xX][\da-fA-F_]+n?|0[oO][0-7_]+n?|0[bB][01_]+n?|(?:\d[\d_]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?n?/
-  NUMBER_TOKEN = /\A(?:#{NUMBER})\z/
+  NUMBER_TOKEN = /\A(?:#{NUMBER})\z/o
   
   def parse
     @scope = JSAnalyzer::Node::Program.new
@@ -163,7 +178,7 @@ class JSAnalyzer::Parser
       JSAnalyzer::Node::Block.new(statements).tap { it.scope = scope }
     elsif gobble(/\p{Space}*;/)
       nil
-    elsif label = gobble(/\p{Space}*(#{IDENTIFIER})\p{Space}*:(?!:)/)&.[](1)
+    elsif label = gobble(/\p{Space}*(#{IDENTIFIER})\p{Space}*:(?!:)/o)&.[](1)
       JSAnalyzer::Node::LabeledStatement.new(label, statement_list_item)
     else
       statement(top: true)
@@ -243,7 +258,7 @@ class JSAnalyzer::Parser
     
     while true
       gobble(WHITESPACE)
-      gob = gobble(/(\}|\[|\"|\'|#{NUMBER}|#{IDENTIFIER}|\.\.\.|\/|\*)/)
+      gob = gobble(/(\}|\[|\"|\'|#{NUMBER}|#{IDENTIFIER}|\.\.\.|\/|\*)/o)
       key_range = group_range(gob, 0)
 
       case gob[0]
@@ -280,7 +295,7 @@ class JSAnalyzer::Parser
           scan_until(/\*\//)
         end
       when "*"
-        key = gobble!(/\p{Space}*(\[|#{IDENTIFIER})/)&.[](1)
+        key = gobble!(/\p{Space}*(\[|#{IDENTIFIER})/o)&.[](1)
         
         if key == '['
           key = statement
@@ -292,7 +307,7 @@ class JSAnalyzer::Parser
         gobble(/\p{Space}*,/)
       when 'async'
         # `async` as an ordinary key: { async: true }, { async() {} }, { async }
-        unless peek(/\p{Space}*(\*|\[|#{IDENTIFIER})/)
+        unless peek(/\p{Space}*(\*|\[|#{IDENTIFIER})/o)
           if gobble(/\p{Space}*:/)
             obj.add("async", expression)
           elsif gobble(/\p{Space}*\(/)
@@ -304,10 +319,10 @@ class JSAnalyzer::Parser
           next
         end
 
-        key = gobble!(/\p{Space}*(\*|\[|#{IDENTIFIER})/)&.[](1)
+        key = gobble!(/\p{Space}*(\*|\[|#{IDENTIFIER})/o)&.[](1)
         if key == '*'
           generator = true
-          key = gobble!(/\p{Space}*(\[|#{IDENTIFIER})/)&.[](1)
+          key = gobble!(/\p{Space}*(\[|#{IDENTIFIER})/o)&.[](1)
         end
         
         if key == '['
@@ -327,7 +342,7 @@ class JSAnalyzer::Parser
         key = match
 
         # Getter or setter: `get name() {}`, `set [expr](v) {}`
-        if (key == 'get' || key == 'set') && (name = gobble(/\p{Space}+(#{IDENTIFIER}|#{NUMBER})|\p{Space}*(\[)/))
+        if (key == 'get' || key == 'set') && (name = gobble(/\p{Space}+(#{IDENTIFIER}|#{NUMBER})|\p{Space}*(\[)/o))
           name = name[1] || name[2]
           if name == '['
             name = statement
@@ -450,14 +465,14 @@ class JSAnalyzer::Parser
   end
   
   def parse_class(expression: false)
-    m = gobble(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)
+    m = gobble(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)
     name = m && [m[1], group_range(m)]
 
     extends = if name&.first == 'extends'
       name = nil
-      m = gobble!(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)
+      m = gobble!(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)
       [m[1], group_range(m)]
-    elsif (m = gobble(/\p{Space}+extends\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/))
+    elsif (m = gobble(/\p{Space}+extends\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o))
       [m[1], group_range(m)]
     end
     gobble!(/\p{Space}*\{/)
@@ -478,7 +493,7 @@ class JSAnalyzer::Parser
   end
   
   def parse_class_part
-    identifier = gobble(/\p{Space}*(\/|\*|\[|\{|\#?#{IDENTIFIER})/)&.[](1)
+    identifier = gobble(/\p{Space}*(\/|\*|\[|\{|\#?#{IDENTIFIER})/o)&.[](1)
     
     # Skip comments
     while identifier == "/"
@@ -489,7 +504,7 @@ class JSAnalyzer::Parser
       when '*'
         scan_until(/\*\//)
       end
-      identifier = gobble(/\p{Space}*(\/|\*|\[|\{|\#?#{IDENTIFIER})/)&.[](1)
+      identifier = gobble(/\p{Space}*(\/|\*|\[|\{|\#?#{IDENTIFIER})/o)&.[](1)
     end
     
     return if identifier.nil?
@@ -521,12 +536,12 @@ class JSAnalyzer::Parser
     else
       if identifier == 'async'
         async = true
-        identifier = gobble!(/\p{Space}*(\*|\[|\#?#{IDENTIFIER})/)&.[](1)
+        identifier = gobble!(/\p{Space}*(\*|\[|\#?#{IDENTIFIER})/o)&.[](1)
       end
       
       if identifier == '*'
         generator = true
-        identifier = gobble!(/\p{Space}*(\[|\#?#{IDENTIFIER})/)&.[](1)
+        identifier = gobble!(/\p{Space}*(\[|\#?#{IDENTIFIER})/o)&.[](1)
       end
       
       if identifier == '['
@@ -561,7 +576,7 @@ class JSAnalyzer::Parser
     elsif gobble(/\p{Space}*\[/)
       parse_array_pattern(kind)
     else
-      m = gobble!(/\p{Space}*(#{IDENTIFIER})/)
+      m = gobble!(/\p{Space}*(#{IDENTIFIER})/o)
       @scope.declare(kind, m[1], range: group_range(m))
     end
   end
@@ -573,7 +588,7 @@ class JSAnalyzer::Parser
       if gobble(/\p{Space}*\.\.\./)
         pattern.add(parse_binding_target(kind), rest: true)
       else
-        m = gobble!(/\p{Space}*(#{IDENTIFIER})/)
+        m = gobble!(/\p{Space}*(#{IDENTIFIER})/o)
         if gobble(/\p{Space}*:/)
           # `key: target`, where key is only a property name
           key = m[1]
@@ -700,7 +715,7 @@ class JSAnalyzer::Parser
     while true
       newline = gobble(WHITESPACE)&.[](0)&.include?("\n")
 
-      if gob = gobble(/(\;|=>|\.\.\.|#{OPERATOR_REGEX}|\?|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|\##{IDENTIFIER}|#{IDENTIFIER})/)
+      if gob = gobble(/(\;|=>|\.\.\.|#{OPERATOR_REGEX}|\?|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|\##{IDENTIFIER}|#{IDENTIFIER})/o)
         token_range = group_range(gob, 0)
         if !stack.empty? && STATEMENT_KEYWORDS.include?(match)
           # A statement keyword after a complete expression starts the next
@@ -726,7 +741,7 @@ class JSAnalyzer::Parser
           if !stack.empty?
             rewind(match.size)
             return stack.pop
-          elsif peek(/\p{Space}*(function(?![\p{Alpha}_\$\d])|\(|#{IDENTIFIER}\p{Space}*=>)/)
+          elsif peek(/\p{Space}*(function(?![\p{Alpha}_\$\d])|\(|#{IDENTIFIER}\p{Space}*=>)/o)
             # async applies only to the function or arrow function after it
             fn = statement(min_prec: PREFIX_PRECEDENCE)
             if fn.is_a?(JSAnalyzer::Node::Method)
@@ -744,7 +759,7 @@ class JSAnalyzer::Parser
           
         when "function"
           generator = !!gobble(/\p{Space}*\*/)
-          m = gobble(/\p{Space}*(#{IDENTIFIER})/)
+          m = gobble(/\p{Space}*(#{IDENTIFIER})/o)
           gobble!(/\p{Space}*\(/)
           
           fn = parse_function(m&.[](1), false, generator, :function, as_expression: !top,
@@ -767,12 +782,12 @@ class JSAnalyzer::Parser
           what = if gobble(/\p{Space}*\(/)
             JSAnalyzer::Node::Group.new(parse_args)
           else
-            m = gobble!(/\p{Space}*(#{IDENTIFIER})/)
+            m = gobble!(/\p{Space}*(#{IDENTIFIER})/o)
             @scope.var(m[1], range: group_range(m))
           end
           while gob = gobble(/\p{Space}*(\.|\[)/)&.[](1)
             what = if gob == "."
-              JSAnalyzer::Node::DotAccessor.new(object: what, key: gobble!(/\p{Space}*(#{IDENTIFIER})/)[1])
+              JSAnalyzer::Node::DotAccessor.new(object: what, key: gobble!(/\p{Space}*(#{IDENTIFIER})/o)[1])
             else
               JSAnalyzer::Node::BracketAccessor.new(what, statement).tap { gobble!(/\p{Space}*\]/) }
             end
@@ -823,7 +838,7 @@ class JSAnalyzer::Parser
               gobble!(/\p{Space}*\]\p{Space}*/)
               JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: key, optional_chaining: true)
             when '.'
-              JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/\#?#{IDENTIFIER}/)[0], optional_chaining: true)
+              JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/\#?#{IDENTIFIER}/o)[0], optional_chaining: true)
             end
           else
             if PRECEDENCE['?'] < min_prec
@@ -840,7 +855,7 @@ class JSAnalyzer::Parser
           if stack.empty?
             raise syntax_error("unexpected #{match.inspect}")
           else
-            stack << JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/\#?#{IDENTIFIER}/)[0])
+            stack << JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/\#?#{IDENTIFIER}/o)[0])
           end
         when "["
           if newline && !stack.empty?
@@ -1067,7 +1082,7 @@ class JSAnalyzer::Parser
           return node
         when "break", "continue"
           keyword = match
-          label = gobble(/[ \t]+(#{IDENTIFIER})/)&.[](1)
+          label = gobble(/[ \t]+(#{IDENTIFIER})/o)&.[](1)
           gobble(/\p{Space}*;/)
           return JSAnalyzer::Node::JumpStatement.new(keyword, label)
         when "this", "super", "null"
@@ -1096,7 +1111,7 @@ class JSAnalyzer::Parser
     end
   end
 
-  OBJECT_KEY = /#{IDENTIFIER}|#{NUMBER}|"(\\"|(?!\\)[^"])+"/
+  OBJECT_KEY = /#{IDENTIFIER}|#{NUMBER}|"(\\"|(?!\\)[^"])+"/o
   def continue_object(key)
     obj = ['{', key]
     obj << statement
@@ -1137,7 +1152,7 @@ class JSAnalyzer::Parser
     # puts "object_key"
 
     while true
-      scan_until(/(\[|#{NUMBER}|\/\/|\"|\'|#{IDENTIFIER})/)
+      scan_until(/(\[|#{NUMBER}|\/\/|\"|\'|#{IDENTIFIER})/o)
 
       case match
       when NUMBER_TOKEN

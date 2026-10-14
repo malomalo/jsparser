@@ -73,12 +73,12 @@ class JSAnalyzer::Node::ImportStatement
     # Declares an imported name, from a match whose group 1 is the name
     bind = ->(m) { parser.scope.declare('import', m[1], range: parser.group_range(m)) }
 
-    m = parser.gobble!(/\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/)
+    m = parser.gobble!(/\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/o)
     gobble = m[1]
     while gobble
       case gobble
       when "*"
-        imports << Star.new(bind.(parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)))
+        imports << Star.new(bind.(parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)))
       when "{"
         mode = :extract
         imports << Extract.new
@@ -87,7 +87,7 @@ class JSAnalyzer::Node::ImportStatement
       when '"', "'"
         value = JSAnalyzer::Node::String.new(parser.quoted_value(gobble), gobble)
         if mode == :extract
-          imports.last.imports << As.new(value, bind.(parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)))
+          imports.last.imports << As.new(value, bind.(parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)))
         else
           from = value
           break
@@ -101,7 +101,7 @@ class JSAnalyzer::Node::ImportStatement
         break
       when JSAnalyzer::Parser::IDENTIFIER
         if mode == :extract
-          imports.last.imports << if gob = parser.gobble(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)
+          imports.last.imports << if gob = parser.gobble(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)
             As.new(gobble, bind.(gob))
           else
             bind.(m)
@@ -110,7 +110,7 @@ class JSAnalyzer::Node::ImportStatement
           imports << Default.new(bind.(m))
         end
       end
-      m = parser.gobble!(/(?:\p{Space}*,)?\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/)
+      m = parser.gobble!(/(?:\p{Space}*,)?\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/o)
       gobble = m[1]
     end
 
