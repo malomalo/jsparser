@@ -8,7 +8,7 @@ class JSAnalyzer::Node::UnaryOperator
     @side = side
   end
 
-  def to_js
+  def to_js(indentation="")
     js = String.new
     js << @operation if @side == :left
     js << @on.to_js

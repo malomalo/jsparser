@@ -27,7 +27,9 @@ class JSAnalyzer::RegexTest < Minitest::Test
   test 'a regex after a function call or for loop' do
     
     assert_parse('for(const s in r)/^(request|service)$/i.test(s)&&delete r[s];', <<~JS)
-        for(const s in r)/^(request|service)$/i.test(s)&&delete r[s];
+        for (const s in r) {
+            /^(request|service)$/i.test(s) && delete r[s];
+        };
     JS
 
     

@@ -3,8 +3,8 @@ require 'test_helper'
 class JSAnalyzerTest < Minitest::Test
   test 'file with exports gets marked as module and exports as module' do
 
-    # TODO: keep parens?
-    assert_parse("(1 + (2+3))", "1 + 2 + 3;")
+    # Parens are kept; dropping them can change the meaning, e.g. (1 + 2) * 3
+    assert_parse("(1 + (2+3))", "(1 + (2 + 3));")
     
     assert_parse("var t = true", "var t = true;")
     

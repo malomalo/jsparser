@@ -41,7 +41,8 @@ class JSAnalyzer::Parser
 
   WHITESPACE = /\p{Space}+/
   IDENTIFIER = /[\p{Alpha}_\$][\p{Alpha}_\$\d]*/
-  NUMBER = /\d+|\d*\.\d+/
+  NUMBER = /0[xX][\da-fA-F_]+n?|0[oO][0-7_]+n?|0[bB][01_]+n?|(?:\d[\d_]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?n?/
+  NUMBER_TOKEN = /\A(?:#{NUMBER})\z/
   
   def parse
     @scope = JSAnalyzer::Node::Program.new
@@ -121,7 +122,7 @@ class JSAnalyzer::Parser
         gobble!(/\p{Space}*\(/)
         obj.shorthand(parse_function(key, true, generator, :class))
         gobble(/\p{Space}*,/)
-      when NUMBER
+      when NUMBER_TOKEN
         key = match
         return parse_scope([key]) unless gobble(/\p{Space}*:\p{Space}*/)
         obj.add(key, statement)
@@ -173,7 +174,7 @@ class JSAnalyzer::Parser
   def parse_function_body(fn, brackets = true)
     begin
       @scope = fn.scope
-      while st = statement(brackets)
+      while st = statement
         fn.body << st
         break if !brackets
       end
@@ -300,15 +301,52 @@ class JSAnalyzer::Parser
     args
   end
 
-  def statement(preceeded_by_open_arrow_fn=false)
+  # Parses the body of an if, for, etc.: either a `{ ... }` block or a single
+  # statement. Returns an array of statements.
+  def parse_body
+    if gobble(/\p{Space}*\{/)
+      body = []
+      while st = statement
+        body << st
+      end
+      gobble!(/\p{Space}*\}/)
+      gobble(/\p{Space}*;/)
+      body
+    else
+      [statement].compact
+    end
+  end
+
+  # Parses `( expression )`, as in `if (...)`
+  def parse_condition
+    gobble!(/\p{Space}*\(/)
+    condition = statement
+    gobble!(/\p{Space}*\)/)
+    condition
+  end
+
+  # Whether the last non-whitespace character consumed was a `;`. Nested
+  # statement calls consume the `;` that ends them, so callers that need a
+  # separator (e.g. the clauses of a for loop) check this before gobbling one.
+  def terminated?
+    return false if @index == 0
+    i = @source.rindex(/\S/, @index - 1)
+    !i.nil? && @source[i] == ';'
+  end
+
+  # no_in:   stop before an `in` operator (the first clause of a for loop)
+  # operand: parse only the operand of a prefix operator; stop before any
+  #          binary operator, ternary, or `;`
+  def statement(no_in: false, operand: false)
     stack = []
-    
+
     while true
       gobble(WHITESPACE)
 
-      if gob = gobble(/(\;|=>|\?|\.\.\.|#{OPERATOR_REGEX}|\.|\[|\{|\(|\"|\'|\`|#{NUMBER}|#{IDENTIFIER})/)
+      if gob = gobble(/(\;|=>|\?|\.\.\.|#{OPERATOR_REGEX}|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|#{IDENTIFIER})/)
         case match
         when ";"
+          rewind(1) if operand
           return stack.pop
         when "export"
           return JSAnalyzer::Node::ExportStatement.parse(self)
@@ -349,12 +387,12 @@ class JSAnalyzer::Parser
           case stack.last
           when JSAnalyzer::Node::Method, JSAnalyzer::Node::VariableReference,
                JSAnalyzer::Node::DotAccessor, JSAnalyzer::Node::BracketAccessor,
-               JSAnalyzer::Node::FunctionCall
+               JSAnalyzer::Node::FunctionCall, JSAnalyzer::Node::Group
             stack << JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args)
           when nil
             # Arrow function parameters or a parenthesized expression
             args = parse_args
-            stack << (peek(/\p{Space}*=>/) ? args : args.first)
+            stack << (peek(/\p{Space}*=>/) ? args : JSAnalyzer::Node::Group.new(args))
           else
             rewind(1)
             return stack.pop
@@ -374,6 +412,10 @@ class JSAnalyzer::Parser
               JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/#{IDENTIFIER}/)[0], optional_chaining: true)
             end
           else
+            if operand
+              rewind(1)
+              return stack.pop
+            end
 
             a = statement
             gobble!(/\p{Space}*:/)
@@ -396,38 +438,56 @@ class JSAnalyzer::Parser
           else
             parse_array
           end
-        when NUMBER
+        when NUMBER_TOKEN
           stack << JSAnalyzer::Node::Number.new(match)
         when '"', "'"
           stack << JSAnalyzer::Node::String.new(quoted_value(match), match)
         when "`"
           stack << tick_quoted_value
-        when "!"
-          # Left Unary operator
+        when "!", "~", "delete", "typeof", "void"
+          # Prefix operator
+          m = match
+          stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(operand: true))
         when "++", "--"
           # Left or Right Unary operator
           stack << JSAnalyzer::Node::UnaryOperator.new(stack.pop, match)
         when "+", "-"
-          # Left Unary or Binary operator
-          stack << if stack.empty?
-            raise 'Stack expected'
-          else
+          # Prefix or Binary operator
           m = match
-          y = statement
-            JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: m, right: y)
+          if stack.empty?
+            stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(operand: true))
+          elsif operand
+            rewind(m.size)
+            return stack.pop
+          else
+            y = statement
+            stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: m, right: y)
           end
         when "/"
-          # Binary operator or comment
+          # Comment, regex, or division
           case peek(1)
           when "/"
             match + scan_until_eol
           when '*'
             [match, scan_until(/\*\//)]
           else
-           stack <<  parse_regex
+            # A `/` after a value is division; anywhere else it starts a regex
+            if stack.empty?
+              stack << parse_regex
+            elsif operand
+              rewind(1)
+              return stack.pop
+            else
+              y = statement
+              stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: "/", right: y)
+            end
           end
         # Assignment
         when '='
+          if operand
+            rewind(1)
+            return stack.pop
+          end
           return JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: match, right: statement)
         when '=>'
           fn = JSAnalyzer::Node::Method.new(args: stack.pop, scope: @scope, type: :arrow)
@@ -435,29 +495,36 @@ class JSAnalyzer::Parser
           return fn
         when 'in', '*', "**", "%", "+=", "-=", "*=", "/=", "%=", "**=", "==", "===", "!=", "!==", '>', "<", ">=", '<=', '&&', '&&=', '||', '||='
           # Binary operator
-          # 
-          # 
-          if stack.empty?
+          m = match
+          if stack.empty? && m == '/='
+            # A regex starting with `=`, e.g. /=+/
+            rewind(1)
+            stack << parse_regex
+          elsif stack.empty?
             raise 'Stack expected'
+          elsif operand || (no_in && m == 'in')
+            rewind(m.size)
+            return stack.pop
           else
-            m = match
             y = statement
             stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: m, right: y)
           end
         when "for"
           gobble!(/\p{Space}*\(/)
-          a = statement
-          # gobble!(/\p{Space}*;/)
-          b = statement
-          # gobble!(/\p{Space}*;/)
-          c = statement
-          gobble!(/\p{Space}*\)\p{Space}*{/)
-          body = []
-          while st = statement
-            body << st
+          initialization = statement(no_in: true)
+
+          if kind = gobble(/\p{Space}*(in|of)(?![\p{Alpha}_\$\d])/)&.[](1)
+            right = statement
+            gobble!(/\p{Space}*\)/)
+            return JSAnalyzer::Node::ForIn.new(initialization, kind, right, parse_body)
           end
-          gobble!(/\p{Space}*\}\p{Space}*;?/)
-          return JSAnalyzer::Node::ForLoop.new(a, b, c, body)
+
+          gobble!(/\p{Space}*;/) unless terminated?
+          condition = statement
+          gobble!(/\p{Space}*;/) unless terminated?
+          afterthought = statement
+          gobble!(/\p{Space}*\)/)
+          return JSAnalyzer::Node::ForLoop.new(initialization, condition, afterthought, parse_body)
         when "var", "let", "const"
           type = match
           case name = gobble!(/\p{Space}*(\{|\[|#{IDENTIFIER})/)[1]
@@ -510,7 +577,7 @@ class JSAnalyzer::Parser
               end
             end
           end
-          gobble(/\p{Space}*;?/)
+          gobble(/\p{Space}*;/) unless terminated?
           return declaration
         when "return"
           return JSAnalyzer::Node::ReturnStatement.new(statement)
@@ -519,20 +586,21 @@ class JSAnalyzer::Parser
         when "true", "false"
           stack <<  JSAnalyzer::Node::Boolean.new(match == "true")
         when "if"
-          gobble!(/\p{Space}*\(/)
-          condition = statement
-          gobble!(/\p{Space}*\)\p{Space}*\{/)
-          stack << JSAnalyzer::Node::If.new(condition, function_body)
-        when "else"
-          gob = gobble!(/\p{Space}*({|if)/)[1]
-          if gob == "if"
-            gobble!(/\p{Space}*\(/)
-            condition = statement
-            gobble!(/\p{Space}*\)\p{Space}*\{/)
-            stack.last.else_if(condition, function_body)
-          else
-            stack.last.else(function_body)
+          node = JSAnalyzer::Node::If.new(parse_condition, parse_body)
+          while gobble(/\p{Space}*else(?![\p{Alpha}_\$\d])/)
+            if gobble(/\p{Space}*if(?![\p{Alpha}_\$\d])/)
+              node.else_if(parse_condition, parse_body)
+            else
+              node.else(parse_body)
+              break
+            end
           end
+          return node
+        when "break", "continue"
+          keyword = match
+          label = gobble(/[ \t]+(#{IDENTIFIER})/)&.[](1)
+          gobble(/\p{Space}*;/)
+          return JSAnalyzer::Node::JumpStatement.new(keyword, label)
         when IDENTIFIER
           if stack.size > 0
             rewind(match.size)
@@ -599,7 +667,7 @@ class JSAnalyzer::Parser
       scan_until(/(\[|#{NUMBER}|\/\/|\"|\'|#{IDENTIFIER})/)
 
       case match
-      when NUMBER
+      when NUMBER_TOKEN
         return match
       when "["
         expr = statement

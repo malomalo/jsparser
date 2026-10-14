@@ -9,15 +9,19 @@ class JSAnalyzer::Node
   autoload :DestructureArray,       'js_analyzer/nodes/destructure_array'
   autoload :DestructureObject,      'js_analyzer/nodes/destructure_object'  
   autoload :ExportStatement,        'js_analyzer/nodes/export_statement'
+  autoload :ForIn,                  'js_analyzer/nodes/for_in'
   autoload :ForLoop,           'js_analyzer/nodes/for_loop'
   autoload :FunctionCall,           'js_analyzer/nodes/function_call'
+  autoload :Group,                  'js_analyzer/nodes/group'
   autoload :If,                     'js_analyzer/nodes/if'
   autoload :ImportStatement,        'js_analyzer/nodes/import_statement'
   autoload :Instantiation,          'js_analyzer/nodes/instantiation'
+  autoload :JumpStatement,          'js_analyzer/nodes/jump_statement'
   autoload :Method,                 'js_analyzer/nodes/method'
   autoload :Number,                 'js_analyzer/nodes/number'
   autoload :Object,                 'js_analyzer/nodes/object'
   autoload :Operator,                'js_analyzer/nodes/operator'
+  autoload :PrefixOperator,         'js_analyzer/nodes/prefix_operator'
   autoload :Program,                'js_analyzer/nodes/program'
   autoload :Regex,        'js_analyzer/nodes/regex'
   autoload :ReturnStatement,        'js_analyzer/nodes/return_statement'
@@ -29,4 +33,15 @@ class JSAnalyzer::Node
   autoload :VariableDeclaration,    'js_analyzer/nodes/variable_declaration'
   autoload :VariableReference,      'js_analyzer/nodes/variable_reference'
   autoload :Yield,                  'js_analyzer/nodes/yield'
+
+  # Renders the statements of a block body as `{ ... }`
+  def self.block_to_js(statements, indentation="")
+    return "{ }" if statements.empty?
+
+    js = ::String.new("{")
+    statements.each do |part|
+      js << "\n#{indentation}    #{part.to_js(indentation + '    ')};"
+    end
+    js << "\n#{indentation}}"
+  end
 end

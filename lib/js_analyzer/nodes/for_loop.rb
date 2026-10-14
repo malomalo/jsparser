@@ -10,23 +10,14 @@ class JSAnalyzer::Node::ForLoop
   end
   
   def to_js(indentation="")
-    js = String.new("for (")
-    if @initialization
-      js << if @initialization.contains { it.is_a?(JSAnalyzer::Node::BinaryOperator) && it.operation == 'in' }
-        @initialization.to_js(encapsulate: true)
-      else
-        @initialization.to_js
-      end
+    clauses = [@initialization, @condition, @afterthought]
+    header = if clauses.none?
+      ";;"
+    else
+      clauses.map { it ? it.to_js : "" }.join("; ")
     end
-    js << "; "
-    js << @condition.to_js if @condition
-    js << "; "
-    js << @afterthought.to_js if @afterthought
-    js << ") {"
-    @body.each do |part|
-      js << "\n#{indentation+'    '}#{part.to_js(indentation+'    ')};"
-    end
-    js << "\n#{indentation}}"
+
+    "for (#{header}) #{JSAnalyzer::Node.block_to_js(@body, indentation)}"
   end
 
 end
