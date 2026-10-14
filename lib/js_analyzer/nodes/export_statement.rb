@@ -87,14 +87,14 @@ class JSAnalyzer::Node::ExportStatement
       xport.export(Default.new(parser.statement))
     when '{'
       glob = Glob.new
-      while var_name = parser.gobble(/\p{Space}*(\/\*|\/\/|#{JSAnalyzer::Parser::IDENTIFIER})/)&.[](1)
+      while (m = parser.gobble(/\p{Space}*(\/\*|\/\/|#{JSAnalyzer::Parser::IDENTIFIER})/)) && (var_name = m[1])
         case var_name
         when "/*"
           parser.scan_until(/\*\//)
         when "//"
           parser.scan_until_eol
         else
-          var = parser.scope.var(var_name)
+          var = parser.scope.var(var_name, range: parser.group_range(m))
           if parser.gobble(/\p{Space}+as/)
             as = parser.gobble!(/\p{Space}+(\'|\"|#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
             glob << if as == "'" || as == '"'

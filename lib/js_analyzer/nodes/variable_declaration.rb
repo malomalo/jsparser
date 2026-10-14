@@ -1,43 +1,48 @@
+# A binding: where a variable is declared, e.g. the `a` in `let a = 1`, a
+# function parameter, an import, or a function or class name.
+#
+#   kind        "var", "let", "const", "param", "function", "class",
+#               "import", "catch", or for variables that are never declared,
+#               "global" (and "arguments" inside a function)
+#   identifier  the name, shared with every reference (see Identifier)
+#   text        the name as written in the source
+#   range       where it is in the source, as character offsets
+#   scope       the Scope it's declared in
+#   references  every VariableReference that resolves to it
 class JSAnalyzer::Node::VariableDeclaration
-  
-  attr_accessor :type, :vars
 
-  def initialize(type, destructure: false)
-    @type = type
-    @vars = []
-    @destructure = destructure
-  end
-  
-  def add(name, init=nil)
-    @vars << [name, init]
-  end
-  
-  def to_js(indentation="", encapsulate: false)
-    case @type
-    when 'import', 'destructure', 'class', 'argument'
-      @vars[0][0]
-    else
-      js = "#{@type} "
-      js << @vars.map do |var|
-        # The target is a name or a destructuring pattern
-        target = var[0].is_a?(::String) ? var[0] : var[0].to_js
-        if var[1]
-          varjs = "#{target} = "
-          varjs << "(" if encapsulate
-          varjs << var[1].to_js
-          varjs << ")" if encapsulate
-          varjs
-        else
-          target
-        end
+  attr_reader :kind, :identifier, :text, :range, :scope, :references
 
-      end.join(', ')
+  def initialize(kind, identifier, scope:, range: nil, text: identifier.name, implicit: false)
+    @kind = kind
+    @identifier = identifier
+    @text = text
+    @range = range
+    @scope = scope
+    @implicit = implicit
+    @references = []
+  end
 
-      js
-    end
+  def name
+    @identifier.name
   end
-  
-  def contains
-    @vars.find { |v| v[1] ? yield(v[1]) : false }
+
+  # True for a global or `arguments` that is used but never declared
+  def implicit?
+    @implicit
   end
+
+  # [line, column], 1-based
+  def location
+    @range && @scope.program.location(@range.begin)
+  end
+
+  def to_js(indentation="")
+    @identifier.to_js
+  end
+
+  def inspect
+    "#<#{self.class.name} #{@kind} #{name}#{" at #{location.join(':')}" if location}>"
+  end
+
 end

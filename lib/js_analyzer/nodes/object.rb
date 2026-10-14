@@ -1,7 +1,8 @@
 class JSAnalyzer::Node::Object
 
   class Entry
-    attr_reader :key, :value
+    attr_reader :key
+    attr_accessor :value
     def initialize(key, value)
       @key = key
       @value = value
@@ -9,7 +10,7 @@ class JSAnalyzer::Node::Object
   end
   
   class ShorthandEntry
-    attr_reader :key
+    attr_accessor :key
     def initialize(key)
       @key = key
     end
@@ -17,7 +18,8 @@ class JSAnalyzer::Node::Object
 
   # `key = value` in a destructuring pattern
   class DefaultEntry
-    attr_reader :key, :value
+    attr_accessor :key
+    attr_reader :value
     def initialize(key, value)
       @key = key
       @value = value

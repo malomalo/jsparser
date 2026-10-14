@@ -134,6 +134,8 @@ class JSAnalyzer::Parser
     gobble(WHITESPACE)
     raise syntax_error("unexpected #{@source[@index].inspect}") unless eos?
 
+    @scope.source = @source
+    @scope.resolve!
     @scope
   end
 
@@ -156,9 +158,9 @@ class JSAnalyzer::Parser
   # object, `;` is an empty statement (returns nil), and `name:` is a label
   def statement_list_item
     if gobble(/\p{Space}*\{/)
-      block = JSAnalyzer::Node::Block.new(parse_statement_list)
+      statements, scope = with_scope(:block) { parse_statement_list }
       gobble!(/\p{Space}*\}/)
-      block
+      JSAnalyzer::Node::Block.new(statements).tap { it.scope = scope }
     elsif gobble(/\p{Space}*;/)
       nil
     elsif label = gobble(/\p{Space}*(#{IDENTIFIER})\p{Space}*:(?!:)/)&.[](1)
@@ -168,12 +170,68 @@ class JSAnalyzer::Parser
     end
   end
 
-  # Parses a required `{ ... }` block, returning its statements
+  # Parses a required `{ ... }` block, in a new scope, returning its
+  # statements
   def parse_block
     gobble!(/\p{Space}*\{/)
-    statements = parse_statement_list
+    statements, _ = with_scope(:block) { parse_statement_list }
     gobble!(/\p{Space}*\}/)
     statements
+  end
+
+  # Runs the block with a new scope of `kind` as the current scope. Returns
+  # the block's result and the scope.
+  def with_scope(kind)
+    scope = JSAnalyzer::Node::Scope.new(scope: @scope, kind: kind)
+    @scope = scope
+    [yield, scope]
+  ensure
+    @scope = scope.parent_scope if scope
+  end
+
+  # The source range of a match's group
+  def group_range(match_data, group = 1)
+    match_data.begin(group)...match_data.end(group)
+  end
+
+  # Arrow function parameters, which are parsed as an expression until the
+  # `=>`. mark is where the scope's references and children were before
+  # them, so they can be moved into the arrow function's scope.
+  ArrowParams = Struct.new(:args, :mark)
+
+  # Turns the variable references in a parameter list parsed as expressions
+  # (an arrow function's) into declarations in `scope`, adding each
+  # reference replaced to `bound`. Returns the node to use in place of node.
+  def bind_targets!(node, scope, kind, bound)
+    bind = ->(n) { bind_targets!(n, scope, kind, bound) }
+    case node
+    when JSAnalyzer::Node::VariableReference
+      bound << node
+      scope.declare(kind, node.text, range: node.range)
+    when JSAnalyzer::Node::BinaryOperator
+      node.left = bind.(node.left) if node.operation == '='
+      node
+    when JSAnalyzer::Node::SpreadOperator
+      node.variable = bind.(node.variable)
+      node
+    when JSAnalyzer::Node::Object
+      node.entries.each do |entry|
+        case entry
+        when JSAnalyzer::Node::Object::ShorthandEntry, JSAnalyzer::Node::Object::DefaultEntry
+          entry.key = bind.(entry.key)
+        when JSAnalyzer::Node::Object::Entry
+          entry.value = bind.(entry.value)
+        when JSAnalyzer::Node::SpreadOperator
+          bind.(entry)
+        end
+      end
+      node
+    when JSAnalyzer::Node::Array
+      node.members.map! { it && bind.(it) }
+      node
+    else
+      node
+    end
   end
   
   def parse_object
@@ -182,6 +240,7 @@ class JSAnalyzer::Parser
     while true
       gobble(WHITESPACE)
       gob = gobble(/(\}|\[|\"|\'|#{NUMBER}|#{IDENTIFIER}|\.\.\.|\/|\*)/)
+      key_range = group_range(gob, 0)
 
       case gob[0]
       when "}"
@@ -235,7 +294,7 @@ class JSAnalyzer::Parser
           elsif gobble(/\p{Space}*\(/)
             obj.shorthand(parse_function("async", false, false, :class))
           else
-            obj.shorthand(@scope.var("async"))
+            obj.shorthand(@scope.var("async", range: key_range))
           end
           gobble(/\p{Space}*,/)
           next
@@ -279,13 +338,13 @@ class JSAnalyzer::Parser
 
         if peek(/\p{Space}*\}/)
           # Shorthand property as the last entry
-          obj.shorthand(@scope.var(key))
+          obj.shorthand(@scope.var(key, range: key_range))
           next
         end
 
         if gobble(/\p{Space}*=(?![=>])/)
           # `{ key = value }`, only valid as a destructuring pattern
-          obj.add_default(@scope.var(key), expression)
+          obj.add_default(@scope.var(key, range: key_range), expression)
           gobble(/\p{Space}*,/)
           next
         end
@@ -294,7 +353,7 @@ class JSAnalyzer::Parser
 
         case gob[1]
         when ","
-          obj.shorthand(@scope.var(key))
+          obj.shorthand(@scope.var(key, range: key_range))
         when "("
           obj.shorthand(parse_function(key, false, false, :class))
           gobble(/\p{Space}*,/)
@@ -311,22 +370,29 @@ class JSAnalyzer::Parser
   
   # as_expression: a function expression, which (unlike a declaration) is part
   # of the surrounding expression and so doesn't consume a following `;`
-  def parse_function(name, async, generator, type, as_expression: false)
-    fn = JSAnalyzer::Node::Method.new(name: name, async: async, scope: @scope, generator: generator, type: type)
+  def parse_function(name, async, generator, type, as_expression: false, name_range: nil)
+    # A function's name is a variable; a method's is a property name
+    declare = (as_expression ? :inner : :outer) if type == :function
+    fn = JSAnalyzer::Node::Method.new(name: name, async: async, scope: @scope, generator: generator, type: type,
+                                      declare: declare, name_range: name_range)
 
-    # Parse parameters: plain names, rest (...args), defaults (a = 1) and
-    # destructuring patterns ({ a, b }, [a, b])
-    until gobble(/\p{Space}*\)/)
-      start = @index
-      rest = gobble(/\p{Space}*\.\.\./)
-      param = if name = gobble(/\p{Space}*(#{IDENTIFIER})(?=\p{Space}*[,)])/)&.[](1)
-        fn.scope.declare('argument', name)
-      else
-        expression
+    # Parse parameters, in the function's scope: names, rest (...args),
+    # defaults (a = 1) and destructuring patterns ({ a, b }, [a, b])
+    @scope = fn.scope
+    begin
+      until gobble(/\p{Space}*\)/)
+        start = @index
+        rest = gobble(/\p{Space}*\.\.\./)
+        param = parse_binding_target('param')
+        if gobble(/\p{Space}*=(?![=>])/)
+          param = JSAnalyzer::Node::BinaryOperator.new(left: param, operation: '=', right: expression)
+        end
+        fn.args << (rest ? JSAnalyzer::Node::SpreadOperator.new(param) : param)
+        gobble(/\p{Space}*,/)
+        raise syntax_error("unexpected #{@source[@index].inspect}") if @index == start
       end
-      fn.args << (rest ? JSAnalyzer::Node::SpreadOperator.new(param) : param)
-      gobble(/\p{Space}*,/)
-      raise syntax_error("unexpected #{@source[@index].inspect}") if @index == start
+    ensure
+      @scope = fn.scope.parent_scope
     end
 
     gobble!(/\p{Space}*\{/)
@@ -377,17 +443,19 @@ class JSAnalyzer::Parser
     array
   end
   
-  def parse_class
-    name = gobble(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)&.[](1)
+  def parse_class(expression: false)
+    m = gobble(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)
+    name = m && [m[1], group_range(m)]
 
-    extends = if name == 'extends'
+    extends = if name&.first == 'extends'
       name = nil
-      gobble!(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
-    else
-      gobble(/\p{Space}+extends\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)&.[](1)
+      m = gobble!(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)
+      [m[1], group_range(m)]
+    elsif (m = gobble(/\p{Space}+extends\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/))
+      [m[1], group_range(m)]
     end
     gobble!(/\p{Space}*\{/)
-    klass = JSAnalyzer::Node::Class.new(scope: @scope, name: name, extends: extends)
+    klass = JSAnalyzer::Node::Class.new(scope: @scope, name: name, extends: extends, expression: expression)
 
     begin
       @scope = klass.scope
@@ -477,29 +545,37 @@ class JSAnalyzer::Parser
   end
   
   # The target of a declaration or parameter: a name, or an object or array
-  # destructuring pattern. Returns the name as a String, or the pattern node.
-  def parse_binding_target
+  # destructuring pattern. Names are declared as `kind` ("let", "param"...).
+  # Returns the VariableDeclaration or the pattern.
+  def parse_binding_target(kind)
     if gobble(/\p{Space}*\{/)
-      parse_object_pattern
+      parse_object_pattern(kind)
     elsif gobble(/\p{Space}*\[/)
-      parse_array_pattern
+      parse_array_pattern(kind)
     else
-      gobble!(/\p{Space}*(#{IDENTIFIER})/)[1]
+      m = gobble!(/\p{Space}*(#{IDENTIFIER})/)
+      @scope.declare(kind, m[1], range: group_range(m))
     end
   end
 
   # `{ a, b: c, d = 1, e: { f }, ...rest }`, after the `{`
-  def parse_object_pattern
+  def parse_object_pattern(kind)
     pattern = JSAnalyzer::Node::DestructureObject.new
     until gobble(/\p{Space}*\}/)
       if gobble(/\p{Space}*\.\.\./)
-        pattern.add(@scope.declare('destructure', gobble!(/\p{Space}*(#{IDENTIFIER})/)[1]), rest: true)
+        pattern.add(parse_binding_target(kind), rest: true)
       else
-        var = @scope.declare('destructure', gobble!(/\p{Space}*(#{IDENTIFIER})/)[1])
-        value = gobble(/\p{Space}*:/) ? parse_binding_target : nil
-        value = @scope.declare('destructure', value) if value.is_a?(::String)
+        m = gobble!(/\p{Space}*(#{IDENTIFIER})/)
+        if gobble(/\p{Space}*:/)
+          # `key: target`, where key is only a property name
+          key = m[1]
+          value = parse_binding_target(kind)
+        else
+          key = @scope.declare(kind, m[1], range: group_range(m))
+          value = nil
+        end
         default = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
-        pattern.add(var, value, default: default)
+        pattern.add(key, value, default: default)
       end
       next if gobble(/\p{Space}*,/)
       gobble!(/\p{Space}*\}/)
@@ -509,7 +585,7 @@ class JSAnalyzer::Parser
   end
 
   # `[a, , b = 1, [c], ...rest]`, after the `[`
-  def parse_array_pattern
+  def parse_array_pattern(kind)
     pattern = JSAnalyzer::Node::DestructureArray.new
     until gobble(/\p{Space}*\]/)
       if gobble(/\p{Space}*,/)
@@ -518,8 +594,7 @@ class JSAnalyzer::Parser
       end
 
       rest = gobble(/\p{Space}*\.\.\./)
-      target = parse_binding_target
-      target = @scope.declare('destructure', target) if target.is_a?(::String)
+      target = parse_binding_target(kind)
       if rest
         pattern.add(target, rest: true)
       else
@@ -618,6 +693,7 @@ class JSAnalyzer::Parser
       newline = gobble(WHITESPACE)&.[](0)&.include?("\n")
 
       if gob = gobble(/(\;|=>|\.\.\.|#{OPERATOR_REGEX}|\?|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|\##{IDENTIFIER}|#{IDENTIFIER})/)
+        token_range = group_range(gob, 0)
         if !stack.empty? && STATEMENT_KEYWORDS.include?(match)
           # A statement keyword after a complete expression starts the next
           # statement
@@ -634,7 +710,7 @@ class JSAnalyzer::Parser
         when "import"
           if peek(/\p{Space}*[(.]/)
             # import(...) or import.meta
-            stack << @scope.var(match)
+            stack << JSAnalyzer::Node::Keyword.new(match)
           else
             return JSAnalyzer::Node::ImportStatement.parse(self)
           end
@@ -652,22 +728,23 @@ class JSAnalyzer::Parser
             else
               # A call to something named async, e.g. async(x)
               args = fn.is_a?(JSAnalyzer::Node::Group) ? fn.expressions : [fn]
-              stack << JSAnalyzer::Node::FunctionCall.new(@scope.var("async"), args)
+              stack << JSAnalyzer::Node::FunctionCall.new(@scope.var("async", range: token_range), args)
             end
           else
-            stack << @scope.var(match)
+            stack << @scope.var(match, range: token_range)
           end
           
         when "function"
           generator = !!gobble(/\p{Space}*\*/)
-          name = gobble(/\p{Space}*(#{IDENTIFIER})/)&.[](1)
+          m = gobble(/\p{Space}*(#{IDENTIFIER})/)
           gobble!(/\p{Space}*\(/)
           
-          fn = parse_function(name, false, generator, :function, as_expression: !top)
+          fn = parse_function(m&.[](1), false, generator, :function, as_expression: !top,
+                              name_range: m && group_range(m))
           return fn if top
           stack << fn
         when "class"
-          klass = parse_class
+          klass = parse_class(expression: !top)
           return klass if top
           stack << klass
         
@@ -682,7 +759,8 @@ class JSAnalyzer::Parser
           what = if gobble(/\p{Space}*\(/)
             JSAnalyzer::Node::Group.new(parse_args)
           else
-            @scope.var(gobble!(/\p{Space}*(#{IDENTIFIER})/)[1])
+            m = gobble!(/\p{Space}*(#{IDENTIFIER})/)
+            @scope.var(m[1], range: group_range(m))
           end
           while gob = gobble(/\p{Space}*(\.|\[)/)&.[](1)
             what = if gob == "."
@@ -713,12 +791,14 @@ class JSAnalyzer::Parser
           when JSAnalyzer::Node::Method, JSAnalyzer::Node::VariableReference,
                JSAnalyzer::Node::DotAccessor, JSAnalyzer::Node::BracketAccessor,
                JSAnalyzer::Node::FunctionCall, JSAnalyzer::Node::Group,
-               JSAnalyzer::Node::Instantiation, JSAnalyzer::Node::TaggedTemplate
+               JSAnalyzer::Node::Instantiation, JSAnalyzer::Node::TaggedTemplate,
+               JSAnalyzer::Node::Keyword # import(), super()
             stack << JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args)
           when nil
             # Arrow function parameters or a parenthesized expression
+            mark = [@scope.references.size, @scope.children.size]
             args = parse_args
-            stack << (peek(/\p{Space}*=>/) ? args : JSAnalyzer::Node::Group.new(args))
+            stack << (peek(/\p{Space}*=>/) ? ArrowParams.new(args, mark) : JSAnalyzer::Node::Group.new(args))
           else
             rewind(1)
             return stack.pop
@@ -773,7 +853,7 @@ class JSAnalyzer::Parser
           stack << JSAnalyzer::Node::Number.new(match)
         when /\A\#/
           # A private name on its own, as in `#x in obj`
-          stack << @scope.var(match)
+          stack << JSAnalyzer::Node::PrivateName.new(match)
         when '"', "'"
           quote = match
           stack << JSAnalyzer::Node::String.new(quoted_value(quote), quote)
@@ -833,7 +913,30 @@ class JSAnalyzer::Parser
             end
           end
         when '=>'
-          fn = JSAnalyzer::Node::Method.new(args: stack.pop, scope: @scope, type: :arrow)
+          params = stack.pop
+          args, mark = case params
+          when ArrowParams
+            [params.args, params.mark]
+          when JSAnalyzer::Node::VariableReference # x => ...
+            [[params], [@scope.references.index { it.equal?(params) } || @scope.references.size, @scope.children.size]]
+          else
+            [Array(params), [@scope.references.size, @scope.children.size]]
+          end
+
+          # The parameters were parsed in this scope; move what they declared
+          # and referenced into the arrow function's
+          references = @scope.references.slice!(mark[0]..) || []
+          children = @scope.children.slice!(mark[1]..) || []
+          fn = JSAnalyzer::Node::Method.new(scope: @scope, type: :arrow)
+          children.each { it.parent_scope = fn.scope; fn.scope.children << it }
+          bound = []
+          fn.args = args.map { bind_targets!(it, fn.scope, 'param', bound) }
+          references.each do |reference|
+            next if bound.any? { it.equal?(reference) }
+            reference.scope = fn.scope
+            fn.scope.references << reference
+          end
+
           parse_function_body(fn, !!gobble(/\p{Space}*\{/))
           stack << fn
         when ","
@@ -856,32 +959,35 @@ class JSAnalyzer::Parser
             return stack.pop
           end
         when "for"
-          is_await = !!gobble(/\p{Space}*await(?![\p{Alpha}_\$\d])/) # for await (x of y)
-          gobble!(/\p{Space}*\(/)
-          initialization = statement(no_in: true)
+          # The head is in its own scope, for `for (let i ...)`
+          with_scope(:block) do
+            is_await = !!gobble(/\p{Space}*await(?![\p{Alpha}_\$\d])/) # for await (x of y)
+            gobble!(/\p{Space}*\(/)
+            initialization = statement(no_in: true)
 
-          if kind = gobble(/\p{Space}*(in|of)(?![\p{Alpha}_\$\d])/)&.[](1)
-            right = statement
+            if kind = gobble(/\p{Space}*(in|of)(?![\p{Alpha}_\$\d])/)&.[](1)
+              right = statement
+              gobble!(/\p{Space}*\)/)
+              return JSAnalyzer::Node::ForIn.new(initialization, kind, right, parse_body, await: is_await)
+            end
+
+            gobble!(/\p{Space}*;/) unless terminated?
+            condition = statement
+            gobble!(/\p{Space}*;/) unless terminated?
+            afterthought = statement
             gobble!(/\p{Space}*\)/)
-            return JSAnalyzer::Node::ForIn.new(initialization, kind, right, parse_body, await: is_await)
+            return JSAnalyzer::Node::ForLoop.new(initialization, condition, afterthought, parse_body)
           end
-
-          gobble!(/\p{Space}*;/) unless terminated?
-          condition = statement
-          gobble!(/\p{Space}*;/) unless terminated?
-          afterthought = statement
-          gobble!(/\p{Space}*\)/)
-          return JSAnalyzer::Node::ForLoop.new(initialization, condition, afterthought, parse_body)
         when "var", "let", "const"
-          declaration = @scope.declare(match)
+          node = JSAnalyzer::Node::VariableStatement.new(match)
           loop do
-            target = parse_binding_target
+            target = parse_binding_target(node.kind)
             init = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
-            declaration.add(target, init)
+            node.add(target, init)
             break unless gobble(/\p{Space}*,/)
           end
           gobble(/\p{Space}*;/) unless terminated?
-          return declaration
+          return node
         when "return"
           return JSAnalyzer::Node::ReturnStatement.new(statement_ends? ? nil : statement)
         when "yield"
@@ -918,11 +1024,13 @@ class JSAnalyzer::Parser
         when "try"
           node = JSAnalyzer::Node::Try.new(parse_block)
           if gobble(/\p{Space}*catch(?![\p{Alpha}_\$\d])/)
-            if gobble(/\p{Space}*\(/)
-              node.param = expression
-              gobble!(/\p{Space}*\)/)
+            with_scope(:catch) do
+              if gobble(/\p{Space}*\(/)
+                node.param = parse_binding_target('catch')
+                gobble!(/\p{Space}*\)/)
+              end
+              node.handler = parse_block
             end
-            node.handler = parse_block
           end
           if gobble(/\p{Space}*finally(?![\p{Alpha}_\$\d])/)
             node.finalizer = parse_block
@@ -932,10 +1040,12 @@ class JSAnalyzer::Parser
           node = JSAnalyzer::Node::Switch.new(parse_condition)
           gobble!(/\p{Space}*\{/)
           case_end = /\p{Space}*((case|default)(?![\p{Alpha}_\$\d])|\}|\z)/
-          while kind = gobble(/\p{Space}*(case|default)(?![\p{Alpha}_\$\d])/)&.[](1)
-            test = kind == "case" ? statement : nil
-            gobble!(/\p{Space}*:/)
-            node.cases << [test, parse_statement_list(case_end)]
+          with_scope(:block) do
+            while kind = gobble(/\p{Space}*(case|default)(?![\p{Alpha}_\$\d])/)&.[](1)
+              test = kind == "case" ? statement : nil
+              gobble!(/\p{Space}*:/)
+              node.cases << [test, parse_statement_list(case_end)]
+            end
           end
           gobble!(/\p{Space}*\}/)
           return node
@@ -944,12 +1054,18 @@ class JSAnalyzer::Parser
           label = gobble(/[ \t]+(#{IDENTIFIER})/)&.[](1)
           gobble(/\p{Space}*;/)
           return JSAnalyzer::Node::JumpStatement.new(keyword, label)
+        when "this", "super", "null"
+          if stack.size > 0
+            rewind(match.size)
+            return stack.pop
+          end
+          stack << JSAnalyzer::Node::Keyword.new(match)
         when IDENTIFIER
           if stack.size > 0
             rewind(match.size)
             return stack.pop
           else
-            stack << @scope.var(match)
+            stack << @scope.var(match, range: token_range)
           end
         else
           # TODO: unhandled token

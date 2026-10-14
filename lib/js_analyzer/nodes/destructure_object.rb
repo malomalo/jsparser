@@ -17,7 +17,8 @@ class JSAnalyzer::Node::DestructureObject
     js << @parts.map do |part|
       next "...#{part[:var].to_js}" if part[:rest]
 
-      s = part[:var].to_js
+      # With a value (`key: target`) the key is a property name, a String
+      s = part[:var].is_a?(::String) ? part[:var].dup : part[:var].to_js
       s += ": #{part[:value].to_js}" if part[:value]
       s += " = #{part[:default].to_js}" if part[:default]
       s

@@ -1,5 +1,7 @@
 class JSAnalyzer::Node::SpreadOperator < JSAnalyzer::Node::Operator
 
+  attr_accessor :variable
+
   def initialize(variable=nil)
     @variable = variable
     @precedence = 2

@@ -5,12 +5,21 @@ class JSAnalyzer::Node::Method
   # True for an arrow function whose body is an expression, not a `{ }` block
   attr_accessor :expression_body
 
-  def initialize(scope:, name: nil, async: false, generator: false, type: :function, args: [])
+  # The VariableDeclaration for a function's name, if it has one
+  attr_reader :binding
+
+  # declare: where a function's name is declared, :outer for a function
+  #          declaration, :inner for a function expression (where the name is
+  #          only visible inside), or nil for methods and arrow functions
+  def initialize(scope:, name: nil, async: false, generator: false, type: :function, args: [],
+                 declare: nil, name_range: nil)
     @name = name
     @async = async
     @type = type
-    @variable = scope.declare("function", name) if name
-    @scope = JSAnalyzer::Node::Scope.new(scope: scope)
+    @scope = JSAnalyzer::Node::Scope.new(scope: scope, kind: type == :arrow ? :arrow : :function)
+    if name && declare
+      @binding = (declare == :outer ? scope : @scope).declare("function", name, range: name_range)
+    end
     @args = Array(args)
     @body = []
     @generator = generator
@@ -21,7 +30,9 @@ class JSAnalyzer::Node::Method
     js << "async " if @async
     js << 'function ' if @type == :function
     js << "*" if @generator
-    if @name
+    if @binding
+      js << @binding.to_js
+    elsif @name
       js << if !@name.is_a?(String)
         "[#{@name.to_js}]"
       else

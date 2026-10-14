@@ -2,7 +2,7 @@
 
 class JSAnalyzer::Node::Block
 
-  attr_accessor :statements
+  attr_accessor :statements, :scope
 
   def initialize(statements=[])
     @statements = statements

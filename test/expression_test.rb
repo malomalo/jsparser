@@ -10,7 +10,7 @@ class JSAnalyzer::ExpressionTest < Minitest::Test
 
   test 'parameters with defaults, destructuring and rest' do
     assert_parse('function f({ a, b }, [c, d], e = 1, ...rest) { return a; }', <<~JS)
-        function f({a, b}, [c, d], e = 1, ...rest) {
+        function f({ a, b }, [ c, d ], e = 1, ...rest) {
             return a;
         };
     JS

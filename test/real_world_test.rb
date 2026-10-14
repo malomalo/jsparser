@@ -55,7 +55,7 @@ class JSAnalyzer::RealWorldTest < Minitest::Test
     assert_parse('const { a, b: { c }, d = 1, ...e } = o, f = 2', 'const { a, b: { c }, d = 1, ...e } = o, f = 2;')
     assert_parse('const a = 1, [, m, d] = p', 'const a = 1, [ , m, d ] = p;')
     assert_parse('let [x, [y, z] = [], ...r] = q', 'let [ x, [ y, z ] = [], ...r ] = q;')
-    assert_parse('function f({ e = {} } = {}) {}', 'function f({e = {}} = {}) { };')
+    assert_parse('function f({ e = {} } = {}) {}', 'function f({ e = {} } = {}) { };')
   end
 
   test 'arrays' do

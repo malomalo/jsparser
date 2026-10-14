@@ -1,10 +1,18 @@
 class JSAnalyzer::Node::Program < JSAnalyzer::Node::Scope
 
-  def initialize(...)
-    super
-    @globals = {}
+  # The source that was parsed
+  attr_accessor :source
+
+  def initialize(**options)
+    super(kind: :program, **options)
   end
-  
+
+  # [line, column], 1-based, of a character offset in the source
+  def location(offset)
+    before = @source[0...offset]
+    [before.count("\n") + 1, offset - (before.rindex("\n") || -1)]
+  end
+
   def to_js(indentation="")
     js = String.new
     @statements.each do |statment|

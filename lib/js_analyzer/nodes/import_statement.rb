@@ -70,12 +70,15 @@ class JSAnalyzer::Node::ImportStatement
     imports = []
     from = nil
 
-    gobble = parser.gobble!(/\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
+    # Declares an imported name, from a match whose group 1 is the name
+    bind = ->(m) { parser.scope.declare('import', m[1], range: parser.group_range(m)) }
+
+    m = parser.gobble!(/\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/)
+    gobble = m[1]
     while gobble
       case gobble
       when "*"
-        gob = parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
-        imports << Star.new(parser.scope.declare('import', gob))
+        imports << Star.new(bind.(parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)))
       when "{"
         mode = :extract
         imports << Extract.new
@@ -84,8 +87,7 @@ class JSAnalyzer::Node::ImportStatement
       when '"', "'"
         value = JSAnalyzer::Node::String.new(parser.quoted_value(gobble), gobble)
         if mode == :extract
-          gob = parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
-          imports.last.imports << As.new(value, parser.scope.declare('import', gob))
+          imports.last.imports << As.new(value, bind.(parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)))
         else
           from = value
           break
@@ -100,15 +102,16 @@ class JSAnalyzer::Node::ImportStatement
       when JSAnalyzer::Parser::IDENTIFIER
         if mode == :extract
           imports.last.imports << if gob = parser.gobble(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/)
-            As.new(gobble, parser.scope.declare('import', gob[1]))
+            As.new(gobble, bind.(gob))
           else
-            parser.scope.declare('import', gobble)
+            bind.(m)
           end
         else
-          imports << Default.new(parser.scope.declare('import', gobble))
+          imports << Default.new(bind.(m))
         end
       end
-      gobble = parser.gobble!(/(?:\p{Space}*,)?\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/)[1]
+      m = parser.gobble!(/(?:\p{Space}*,)?\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/)
+      gobble = m[1]
     end
 
     JSAnalyzer::Node::ImportStatement.new(imports: imports, from: from, attributes: parser.parse_import_attributes)
