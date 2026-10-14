@@ -34,10 +34,32 @@ class JSAnalyzer::Parser
     
   # end
   
-  BINARY_OPERATORS = %w(+ - * ** / % += -= *= /= %= **= = == === != !== > < >= <= && &&= || ||= !=).sort_by(&:length).reverse
+  ASSIGNMENT_OPERATORS = %w(= += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=)
+
+  # Binding power of binary operators, higher binds tighter. See
+  # https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Operator_precedence
+  PRECEDENCE = {
+    **ASSIGNMENT_OPERATORS.to_h { [it, 2] },
+    '?' => 3, # ternary
+    '||' => 4, '??' => 4,
+    '&&' => 5,
+    '|' => 6,
+    '^' => 7,
+    '&' => 8,
+    '==' => 9, '!=' => 9, '===' => 9, '!==' => 9,
+    '<' => 10, '>' => 10, '<=' => 10, '>=' => 10, 'in' => 10, 'instanceof' => 10,
+    '<<' => 11, '>>' => 11, '>>>' => 11,
+    '+' => 12, '-' => 12,
+    '*' => 13, '/' => 13, '%' => 13,
+    '**' => 14
+  }
+  PREFIX_PRECEDENCE = 15
+  RIGHT_ASSOCIATIVE = ASSIGNMENT_OPERATORS + %w(**)
+
+  BINARY_OPERATORS = PRECEDENCE.keys.grep_v(/\A(\?|[a-z]+)\z/)
   UNARY_OPERATORS = %w(++ --)
-  OPERATORS = UNARY_OPERATORS+BINARY_OPERATORS
-  OPERATOR_REGEX = Regexp.new(OPERATORS.map{|o| o.gsub(/[\*\&\|\+]/) { |i| "\\#{i}" } }.join("|"))
+  OPERATORS = (UNARY_OPERATORS+BINARY_OPERATORS).sort_by(&:length).reverse
+  OPERATOR_REGEX = Regexp.union(OPERATORS)
 
   WHITESPACE = /\p{Space}+/
   IDENTIFIER = /[\p{Alpha}_\$][\p{Alpha}_\$\d]*/
@@ -48,7 +70,9 @@ class JSAnalyzer::Parser
     @scope = JSAnalyzer::Node::Program.new
     
     while !eos?
+      start = @index
       @scope << statement
+      raise "SyntaxError: unexpected #{@source[@index].inspect} at #{@index}" if @index == start
     end
     
     @scope
@@ -334,19 +358,31 @@ class JSAnalyzer::Parser
     !i.nil? && @source[i] == ';'
   end
 
-  # no_in:   stop before an `in` operator (the first clause of a for loop)
-  # operand: parse only the operand of a prefix operator; stop before any
-  #          binary operator, ternary, or `;`
-  def statement(no_in: false, operand: false)
+  # Parses the right side of the binary operator `op` and pushes the
+  # BinaryOperator onto the stack. Returns false, consuming nothing, if `op`
+  # binds looser than min_prec and so belongs to the caller.
+  def binary_operator(stack, op, min_prec, no_in)
+    prec = PRECEDENCE.fetch(op)
+    return false if prec < min_prec || (no_in && op == 'in')
+
+    right = statement(min_prec: RIGHT_ASSOCIATIVE.include?(op) ? prec : prec + 1)
+    stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: op, right: right)
+    true
+  end
+
+  # no_in:    stop before an `in` operator (the first clause of a for loop)
+  # min_prec: stop before any operator that binds looser than this (see
+  #           PRECEDENCE), or a `;`; used to parse operands
+  def statement(no_in: false, min_prec: 0)
     stack = []
 
     while true
-      gobble(WHITESPACE)
+      newline = gobble(WHITESPACE)&.[](0)&.include?("\n")
 
-      if gob = gobble(/(\;|=>|\?|\.\.\.|#{OPERATOR_REGEX}|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|#{IDENTIFIER})/)
+      if gob = gobble(/(\;|=>|\.\.\.|#{OPERATOR_REGEX}|\?|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|#{IDENTIFIER})/)
         case match
         when ";"
-          rewind(1) if operand
+          rewind(1) if min_prec > 0
           return stack.pop
         when "export"
           return JSAnalyzer::Node::ExportStatement.parse(self)
@@ -412,14 +448,15 @@ class JSAnalyzer::Parser
               JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/#{IDENTIFIER}/)[0], optional_chaining: true)
             end
           else
-            if operand
+            if PRECEDENCE['?'] < min_prec
               rewind(1)
               return stack.pop
             end
 
             a = statement
             gobble!(/\p{Space}*:/)
-            return JSAnalyzer::Node::Ternary.new(stack.pop, a, statement)
+            b = statement(min_prec: PRECEDENCE['='])
+            stack << JSAnalyzer::Node::Ternary.new(stack.pop, a, b)
           end
         when "."
           if stack.empty?
@@ -428,15 +465,19 @@ class JSAnalyzer::Parser
             stack << JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/#{IDENTIFIER}/)[0])
           end
         when "["
-          stack << if stack.last.is_a?(JSAnalyzer::Node::VariableReference)
-            n = JSAnalyzer::Node::BracketAccessor.new(stack.pop, statement)
-            gobble!(']')
-            n
-          elsif stack.size > 0
+          if newline && !stack.empty?
+            # Treat a `[` on a new line as a new statement. (JavaScript
+            # itself would continue the expression here.)
             rewind(1)
             return stack.pop
-          else
+          end
+
+          stack << if stack.empty?
             parse_array
+          else
+            n = JSAnalyzer::Node::BracketAccessor.new(stack.pop, statement)
+            gobble!(/\p{Space}*\]/)
+            n
           end
         when NUMBER_TOKEN
           stack << JSAnalyzer::Node::Number.new(match)
@@ -447,21 +488,23 @@ class JSAnalyzer::Parser
         when "!", "~", "delete", "typeof", "void"
           # Prefix operator
           m = match
-          stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(operand: true))
+          stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
         when "++", "--"
-          # Left or Right Unary operator
-          stack << JSAnalyzer::Node::UnaryOperator.new(stack.pop, match)
+          # Prefix or postfix increment / decrement
+          m = match
+          stack << if stack.empty?
+            JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
+          else
+            JSAnalyzer::Node::UnaryOperator.new(stack.pop, m)
+          end
         when "+", "-"
           # Prefix or Binary operator
           m = match
           if stack.empty?
-            stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(operand: true))
-          elsif operand
+            stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
+          elsif !binary_operator(stack, m, min_prec, no_in)
             rewind(m.size)
             return stack.pop
-          else
-            y = statement
-            stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: m, right: y)
           end
         when "/"
           # Comment, regex, or division
@@ -474,27 +517,17 @@ class JSAnalyzer::Parser
             # A `/` after a value is division; anywhere else it starts a regex
             if stack.empty?
               stack << parse_regex
-            elsif operand
+            elsif !binary_operator(stack, "/", min_prec, no_in)
               rewind(1)
               return stack.pop
-            else
-              y = statement
-              stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: "/", right: y)
             end
           end
-        # Assignment
-        when '='
-          if operand
-            rewind(1)
-            return stack.pop
-          end
-          return JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: match, right: statement)
         when '=>'
           fn = JSAnalyzer::Node::Method.new(args: stack.pop, scope: @scope, type: :arrow)
           parse_function_body(fn, !!gobble(/\p{Space}*\{/))
           return fn
-        when 'in', '*', "**", "%", "+=", "-=", "*=", "/=", "%=", "**=", "==", "===", "!=", "!==", '>', "<", ">=", '<=', '&&', '&&=', '||', '||='
-          # Binary operator
+        when *PRECEDENCE.keys
+          # Binary operator, including assignment
           m = match
           if stack.empty? && m == '/='
             # A regex starting with `=`, e.g. /=+/
@@ -502,12 +535,9 @@ class JSAnalyzer::Parser
             stack << parse_regex
           elsif stack.empty?
             raise 'Stack expected'
-          elsif operand || (no_in && m == 'in')
+          elsif !binary_operator(stack, m, min_prec, no_in)
             rewind(m.size)
             return stack.pop
-          else
-            y = statement
-            stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: m, right: y)
           end
         when "for"
           gobble!(/\p{Space}*\(/)
@@ -608,8 +638,6 @@ class JSAnalyzer::Parser
           else
             stack << @scope.var(match)
           end
-        when ","
-          # TODO: comma operator
         else
           # TODO: unhandled token
         end

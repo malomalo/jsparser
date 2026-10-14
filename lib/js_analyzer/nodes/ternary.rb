@@ -1,5 +1,7 @@
 class JSAnalyzer::Node::Ternary
 
+  attr_reader :condition, :a, :b
+
   def initialize(condition, a, b)
     @condition = condition
     @a = a
