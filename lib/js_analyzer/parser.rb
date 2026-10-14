@@ -419,6 +419,12 @@ class JSAnalyzer::Parser
     
     return if identifier.nil?
 
+    # static, get, set and async are member names when nothing follows them,
+    # e.g. `get(key) {}` or `static = 1`
+    if %w(static get set async).include?(identifier) && peek(/\p{Space}*[(=;}]|[ \t]*\n/)
+      return parse_class_member(identifier, false, false)
+    end
+
     member = case identifier
     when "static"
       return parse_class_part.tap { |p| p.static = true }
@@ -452,18 +458,80 @@ class JSAnalyzer::Parser
         gobble!(/\p{Space}*\]\p{Space}*/)
       end
 
-      case gobble!(/\p{Space}*(\(|=|;)/)[1]
-      when "("
-        parse_function(identifier, async, generator, :class)
-      when "="
-        return JSAnalyzer::Node::Class::Field.new(identifier, statement)
-      else
-        identifier
-      end
+      return parse_class_member(identifier, async, generator)
     end
     JSAnalyzer::Node::Class::Field.new(member)
   end
+
+  # A method or field named `name`, after its name
+  def parse_class_member(name, async, generator)
+    case gobble(/\p{Space}*(\(|=|;)/)&.[](1)
+    when "("
+      JSAnalyzer::Node::Class::Field.new(parse_function(name, async, generator, :class))
+    when "="
+      JSAnalyzer::Node::Class::Field.new(name, statement)
+    else
+      # A field without an initializer, ended by `;` or a new line
+      JSAnalyzer::Node::Class::Field.new(name)
+    end
+  end
   
+  # The target of a declaration or parameter: a name, or an object or array
+  # destructuring pattern. Returns the name as a String, or the pattern node.
+  def parse_binding_target
+    if gobble(/\p{Space}*\{/)
+      parse_object_pattern
+    elsif gobble(/\p{Space}*\[/)
+      parse_array_pattern
+    else
+      gobble!(/\p{Space}*(#{IDENTIFIER})/)[1]
+    end
+  end
+
+  # `{ a, b: c, d = 1, e: { f }, ...rest }`, after the `{`
+  def parse_object_pattern
+    pattern = JSAnalyzer::Node::DestructureObject.new
+    until gobble(/\p{Space}*\}/)
+      if gobble(/\p{Space}*\.\.\./)
+        pattern.add(@scope.declare('destructure', gobble!(/\p{Space}*(#{IDENTIFIER})/)[1]), rest: true)
+      else
+        var = @scope.declare('destructure', gobble!(/\p{Space}*(#{IDENTIFIER})/)[1])
+        value = gobble(/\p{Space}*:/) ? parse_binding_target : nil
+        value = @scope.declare('destructure', value) if value.is_a?(::String)
+        default = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
+        pattern.add(var, value, default: default)
+      end
+      next if gobble(/\p{Space}*,/)
+      gobble!(/\p{Space}*\}/)
+      break
+    end
+    pattern
+  end
+
+  # `[a, , b = 1, [c], ...rest]`, after the `[`
+  def parse_array_pattern
+    pattern = JSAnalyzer::Node::DestructureArray.new
+    until gobble(/\p{Space}*\]/)
+      if gobble(/\p{Space}*,/)
+        pattern.hole
+        next
+      end
+
+      rest = gobble(/\p{Space}*\.\.\./)
+      target = parse_binding_target
+      target = @scope.declare('destructure', target) if target.is_a?(::String)
+      if rest
+        pattern.add(target, rest: true)
+      else
+        pattern.add(target, (expression if gobble(/\p{Space}*=(?![=>])/)))
+      end
+      next if gobble(/\p{Space}*,/)
+      gobble!(/\p{Space}*\]/)
+      break
+    end
+    pattern
+  end
+
   def parse_args
     args = []
     while nibble = expression
@@ -484,6 +552,14 @@ class JSAnalyzer::Parser
     else
       [statement_list_item].compact
     end
+  end
+
+  # Whether the statement ends here, for keywords like `return` whose value
+  # must start on the same line: a `;`, `}`, the end of the source, or a new
+  # line (automatic semicolon insertion). Consumes a `;`.
+  def statement_ends?
+    return true if gobble(/[ \t]*;/)
+    !!peek(/[ \t]*(\/\/[^\n]*)?(\n|\}|\z)/)
   end
 
   # Parses `( expression )`, as in `if (...)`
@@ -698,6 +774,12 @@ class JSAnalyzer::Parser
         when "++", "--"
           # Prefix or postfix increment / decrement
           m = match
+          if newline && !stack.empty?
+            # `a \n ++b` is `a; ++b`
+            rewind(m.size)
+            return stack.pop
+          end
+
           stack << if stack.empty?
             JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
           else
@@ -752,13 +834,14 @@ class JSAnalyzer::Parser
             return stack.pop
           end
         when "for"
+          is_await = !!gobble(/\p{Space}*await(?![\p{Alpha}_\$\d])/) # for await (x of y)
           gobble!(/\p{Space}*\(/)
           initialization = statement(no_in: true)
 
           if kind = gobble(/\p{Space}*(in|of)(?![\p{Alpha}_\$\d])/)&.[](1)
             right = statement
             gobble!(/\p{Space}*\)/)
-            return JSAnalyzer::Node::ForIn.new(initialization, kind, right, parse_body)
+            return JSAnalyzer::Node::ForIn.new(initialization, kind, right, parse_body, await: is_await)
           end
 
           gobble!(/\p{Space}*;/) unless terminated?
@@ -768,75 +851,19 @@ class JSAnalyzer::Parser
           gobble!(/\p{Space}*\)/)
           return JSAnalyzer::Node::ForLoop.new(initialization, condition, afterthought, parse_body)
         when "var", "let", "const"
-          type = match
-          case name = gobble!(/\p{Space}*(\{|\[|#{IDENTIFIER})/)[1]
-          when "{"
-            d = JSAnalyzer::Node::DestructureObject.new(type)
-            while gob = gobble(/\p{Space}*(\.\.\.)?(#{JSAnalyzer::Parser::IDENTIFIER})\p{Space}*/)
-              var = @scope.declare('destructure', gob[2])
-              if gob[1]
-                d.add(var, rest: true)
-              else
-                value = gobble(/:\p{Space}*/) ? expression : nil
-                default = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
-                d.add(var, value, default: default)
-              end
-              gobble(/\p{Space}*,/)
-            end
-            gobble!(/\p{Space}*\}/)
-
-            y = if gobble(/\p{Space}*=/)
-              z = statement
-              JSAnalyzer::Node::BinaryOperator.new(left: d, operation: "=", right: z)
-            else
-              d
-            end
-            return y
-          when "["
-            d = JSAnalyzer::Node::DestructureArray.new(type)
-            while gob = gobble(/\p{Space}*(\.\.\.)?(#{JSAnalyzer::Parser::IDENTIFIER})\p{Space}*/)
-              var = @scope.declare('destructure', gob[2])
-              if gob[1]
-                d.add(var, rest: true)
-              else
-                d.add(var, gobble(/=(?![=>])\p{Space}*/) ? expression : nil)
-              end
-              gobble(/\p{Space}*,/)
-            end
-            gobble!(/\p{Space}*\]/)
-
-            y = if gobble(/\p{Space}*=/)
-              z = statement
-              JSAnalyzer::Node::BinaryOperator.new(left: d, operation: "=", right: z)
-            else
-              d
-            end
-            return y
-          else
-            declaration = @scope.declare(type)
-            stack << declaration
-            initialization = expression if gobble(/\p{Space}*=/)
-            declaration.add(name, initialization)
-
-            while gob = gobble(/\p{Space}*(,|\[|\{|\/\/|\/\*)/)&.[](1)
-              case gob
-              when "/*"
-                scan_until(/\*\//)
-              when "//"
-                scan_until_eol
-              when ","
-                name = gobble!(/\p{Space}*(#{IDENTIFIER})/)[1]
-                init = expression if gobble(/\p{Space}*=/)
-                declaration.add(name, init)
-              end
-            end
+          declaration = @scope.declare(match)
+          loop do
+            target = parse_binding_target
+            initialization = expression if gobble(/\p{Space}*=(?![=>])/)
+            declaration.add(target, initialization)
+            break unless gobble(/\p{Space}*,/)
           end
           gobble(/\p{Space}*;/) unless terminated?
           return declaration
         when "return"
-          return JSAnalyzer::Node::ReturnStatement.new(statement)
+          return JSAnalyzer::Node::ReturnStatement.new(statement_ends? ? nil : statement)
         when "yield"
-          return JSAnalyzer::Node::Yield.new(statement)
+          return JSAnalyzer::Node::Yield.new(statement_ends? ? nil : statement)
         when "true", "false"
           stack <<  JSAnalyzer::Node::Boolean.new(match == "true")
         when "if"

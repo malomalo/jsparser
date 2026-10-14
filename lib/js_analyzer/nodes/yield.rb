@@ -5,7 +5,7 @@ class JSAnalyzer::Node::Yield
   end
   
   def to_js(indentation="")
-    "yield #{@value.to_js}"
+    @value ? "yield #{@value.to_js}" : "yield"
   end
 
 end

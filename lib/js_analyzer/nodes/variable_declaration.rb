@@ -19,16 +19,18 @@ class JSAnalyzer::Node::VariableDeclaration
     else
       js = "#{@type} "
       js << @vars.map do |var|
+        # The target is a name or a destructuring pattern
+        target = var[0].is_a?(::String) ? var[0] : var[0].to_js
         if var[1]
-          varjs = "#{var[0]} = "
+          varjs = "#{target} = "
           varjs << "(" if encapsulate
           varjs << var[1].to_js
           varjs << ")" if encapsulate
           varjs
         else
-          var[0]
+          target
         end
-        
+
       end.join(', ')
 
       js
