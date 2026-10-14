@@ -7,7 +7,7 @@ class JSAnalyzer::Node::ReturnStatement
   end
   
   def to_js(indentation="")
-    "return #{@value.to_js}"
+    @value ? "return #{@value.to_js}" : "return"
   end
 
 end

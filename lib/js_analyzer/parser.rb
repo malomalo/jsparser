@@ -70,13 +70,50 @@ class JSAnalyzer::Parser
   def parse
     @scope = JSAnalyzer::Node::Program.new
     
-    while !eos?
+    parse_statement_list.each { @scope << it }
+    gobble(WHITESPACE)
+    raise "SyntaxError: unexpected #{@source[@index].inspect} at #{@index}" unless eos?
+
+    @scope
+  end
+
+  STATEMENT_LIST_END = /\p{Space}*(\}|\z)/
+
+  # Parses statements until `until` matches (by default a `}` or the end of
+  # the source), without consuming it
+  def parse_statement_list(until_pattern = STATEMENT_LIST_END)
+    statements = []
+    until peek(until_pattern)
       start = @index
-      @scope << statement
+      st = statement_list_item
+      statements << st if st
       raise "SyntaxError: unexpected #{@source[@index].inspect} at #{@index}" if @index == start
     end
-    
-    @scope
+    statements
+  end
+
+  # A statement where one may begin: here `{` starts a block rather than an
+  # object, `;` is an empty statement (returns nil), and `name:` is a label
+  def statement_list_item
+    if gobble(/\p{Space}*\{/)
+      block = JSAnalyzer::Node::Block.new(parse_statement_list)
+      gobble!(/\p{Space}*\}/)
+      block
+    elsif gobble(/\p{Space}*;/)
+      nil
+    elsif label = gobble(/\p{Space}*(#{IDENTIFIER})\p{Space}*:(?!:)/)&.[](1)
+      JSAnalyzer::Node::LabeledStatement.new(label, statement_list_item)
+    else
+      statement
+    end
+  end
+
+  # Parses a required `{ ... }` block, returning its statements
+  def parse_block
+    gobble!(/\p{Space}*\{/)
+    statements = parse_statement_list
+    gobble!(/\p{Space}*\}/)
+    statements
   end
   
   def parse_object
@@ -200,9 +237,7 @@ class JSAnalyzer::Parser
     begin
       @scope = fn.scope
       if brackets
-        while st = statement
-          fn.body << st
-        end
+        fn.body.concat(parse_statement_list)
       else
         # Arrow function with an expression body
         fn.expression_body = true
@@ -286,9 +321,7 @@ class JSAnalyzer::Parser
       block = JSAnalyzer::Node::Class::InitializationBlock.new(scope: @scope)
       begin
         @scope = block
-        while st = statement
-          block << st
-        end
+        parse_statement_list.each { block << it }
       ensure
         @scope = block.parent_scope
       end
@@ -335,16 +368,12 @@ class JSAnalyzer::Parser
   # Parses the body of an if, for, etc.: either a `{ ... }` block or a single
   # statement. Returns an array of statements.
   def parse_body
-    if gobble(/\p{Space}*\{/)
-      body = []
-      while st = statement
-        body << st
-      end
-      gobble!(/\p{Space}*\}/)
+    if peek(/\p{Space}*\{/)
+      body = parse_block
       gobble(/\p{Space}*;/)
       body
     else
-      [statement].compact
+      [statement_list_item].compact
     end
   end
 
@@ -517,7 +546,7 @@ class JSAnalyzer::Parser
           stack << JSAnalyzer::Node::String.new(quoted_value(match), match)
         when "`"
           stack << tick_quoted_value
-        when "!", "~", "delete", "typeof", "void"
+        when "!", "~", "delete", "typeof", "void", "await"
           # Prefix operator
           m = match
           stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
@@ -663,6 +692,40 @@ class JSAnalyzer::Parser
               break
             end
           end
+          return node
+        when "while"
+          return JSAnalyzer::Node::While.new(parse_condition, parse_body)
+        when "do"
+          body = parse_body
+          gobble!(/\p{Space}*while(?![\p{Alpha}_\$\d])/)
+          condition = parse_condition
+          gobble(/\p{Space}*;/)
+          return JSAnalyzer::Node::DoWhile.new(body, condition)
+        when "throw"
+          return JSAnalyzer::Node::ThrowStatement.new(statement)
+        when "try"
+          node = JSAnalyzer::Node::Try.new(parse_block)
+          if gobble(/\p{Space}*catch(?![\p{Alpha}_\$\d])/)
+            if gobble(/\p{Space}*\(/)
+              node.param = expression
+              gobble!(/\p{Space}*\)/)
+            end
+            node.handler = parse_block
+          end
+          if gobble(/\p{Space}*finally(?![\p{Alpha}_\$\d])/)
+            node.finalizer = parse_block
+          end
+          return node
+        when "switch"
+          node = JSAnalyzer::Node::Switch.new(parse_condition)
+          gobble!(/\p{Space}*\{/)
+          case_end = /\p{Space}*((case|default)(?![\p{Alpha}_\$\d])|\}|\z)/
+          while kind = gobble(/\p{Space}*(case|default)(?![\p{Alpha}_\$\d])/)&.[](1)
+            test = kind == "case" ? statement : nil
+            gobble!(/\p{Space}*:/)
+            node.cases << [test, parse_statement_list(case_end)]
+          end
+          gobble!(/\p{Space}*\}/)
           return node
         when "break", "continue"
           keyword = match

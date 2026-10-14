@@ -15,9 +15,9 @@ class JSAnalyzer::Node::VariableDeclaration
   def to_js(indentation="", encapsulate: false)
     case @type
     when 'import', 'destructure', 'class', 'argument'
-      indentation + @vars[0][0]
+      @vars[0][0]
     else
-      js = "#{indentation}#{@type} "
+      js = "#{@type} "
       js << @vars.map do |var|
         if var[1]
           varjs = "#{var[0]} = "

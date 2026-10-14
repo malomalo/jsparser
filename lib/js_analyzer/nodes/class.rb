@@ -15,7 +15,7 @@ class JSAnalyzer::Node::Class
   end
   
   def to_js(indentation="")
-    js = "#{indentation}class "
+    js = String.new("class ")
     js << "#{@name.to_js} " if @name
     js << "extends #{@extends.to_js} " if @extends
     js << "{\n"

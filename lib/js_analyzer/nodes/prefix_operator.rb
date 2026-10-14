@@ -1,6 +1,6 @@
 class JSAnalyzer::Node::PrefixOperator
 
-  WORD_OPERATORS = %w(delete typeof void)
+  WORD_OPERATORS = %w(delete typeof void await)
 
   attr_accessor :operation, :operand
 

@@ -6,13 +6,14 @@ class JSAnalyzer::SpreadSyntaxTest < Minitest::Test
     input = <<~JS
         myFunction(a, ...iterableObj, b)
         [1, ...iterableObj, '4', 'five', 6]
-        { ...obj, key: 'value' }
+        ({ ...obj, key: 'value' })
     JS
-    
+
+    # A `{` that starts a statement is a block, so the object is wrapped in parens
     assert_parse(input, <<~JS)
         myFunction(a, ...iterableObj, b);
         [1, ...iterableObj, '4', 'five', 6];
-        {...obj, key: 'value'};
+        ({...obj, key: 'value'});
     JS
   end
   

@@ -34,6 +34,14 @@ class JSAnalyzer::Node
   autoload :VariableReference,      'js_analyzer/nodes/variable_reference'
   autoload :Yield,                  'js_analyzer/nodes/yield'
 
+  autoload :Block,                  'js_analyzer/nodes/statements'
+  autoload :DoWhile,                'js_analyzer/nodes/statements'
+  autoload :LabeledStatement,       'js_analyzer/nodes/statements'
+  autoload :Switch,                 'js_analyzer/nodes/statements'
+  autoload :ThrowStatement,         'js_analyzer/nodes/statements'
+  autoload :Try,                    'js_analyzer/nodes/statements'
+  autoload :While,                  'js_analyzer/nodes/statements'
+
   # Renders the statements of a block body as `{ ... }`
   def self.block_to_js(statements, indentation="")
     return "{ }" if statements.empty?
