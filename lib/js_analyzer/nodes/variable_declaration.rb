@@ -32,6 +32,16 @@ class JSAnalyzer::Node::VariableDeclaration
     @implicit
   end
 
+  # The references that use the variable's value
+  def reads
+    @references.select(&:read?)
+  end
+
+  # The references that assign to the variable, after its declaration
+  def writes
+    @references.select(&:write?)
+  end
+
   # [line, column], 1-based
   def location
     @range && @scope.program.location(@range.begin)

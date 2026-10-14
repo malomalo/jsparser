@@ -719,8 +719,40 @@ class JSAnalyzer::Parser
     return false if prec < min_prec || (no_in && op == 'in')
 
     right = statement(min_prec: RIGHT_ASSOCIATIVE.include?(op) ? prec : prec + 1)
-    stack << JSAnalyzer::Node::BinaryOperator.new(left: stack.pop, operation: op, right: right)
+    left = stack.pop
+    # `x = 1` only writes x; `x += 1` and `x ||= y` read it too
+    mark_written(left, read: op != '=') if ASSIGNMENT_OPERATORS.include?(op)
+    stack << JSAnalyzer::Node::BinaryOperator.new(left: left, operation: op, right: right)
     true
+  end
+
+  # Marks the variable references an assignment writes to: a reference, or
+  # those in a destructuring pattern like `[a, { b }] = c`
+  def mark_written(node, read: false)
+    case node
+    when JSAnalyzer::Node::VariableReference
+      node.write = true
+      node.read = read
+    when JSAnalyzer::Node::BinaryOperator # a default, as in [a = 1] = c
+      mark_written(node.left) if node.operation == '='
+    when JSAnalyzer::Node::SpreadOperator
+      mark_written(node.variable)
+    when JSAnalyzer::Node::Group # (a) = 1
+      node.expressions.each { mark_written(it, read: read) }
+    when JSAnalyzer::Node::Array
+      node.members.each { mark_written(it) if it }
+    when JSAnalyzer::Node::Object
+      node.entries.each do |entry|
+        case entry
+        when JSAnalyzer::Node::Object::ShorthandEntry, JSAnalyzer::Node::Object::DefaultEntry
+          mark_written(entry.key)
+        when JSAnalyzer::Node::Object::Entry
+          mark_written(entry.value)
+        when JSAnalyzer::Node::SpreadOperator
+          mark_written(entry)
+        end
+      end
+    end
   end
 
   # A single expression that stops at a `,`, for argument lists, array items,
@@ -933,10 +965,13 @@ class JSAnalyzer::Parser
             return stack.pop
           end
 
-          stack << if stack.empty?
-            JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
+          prefix = stack.empty?
+          operand = prefix ? statement(min_prec: PREFIX_PRECEDENCE) : stack.pop
+          mark_written(operand, read: true) # x++ and ++x read and write x
+          stack << if prefix
+            JSAnalyzer::Node::PrefixOperator.new(m, operand)
           else
-            JSAnalyzer::Node::UnaryOperator.new(stack.pop, m)
+            JSAnalyzer::Node::UnaryOperator.new(operand, m)
           end
         when "+", "-"
           # Prefix or Binary operator
@@ -1025,6 +1060,7 @@ class JSAnalyzer::Parser
             initialization = statement(no_in: true)
 
             if kind = gobble(/\p{Space}*(in|of)(?![\p{Alpha}_\$\d])/)&.[](1)
+              mark_written(initialization) # for (x of xs) assigns x
               right = statement
               gobble!(/\p{Space}*\)/)
               return JSAnalyzer::Node::ForIn.new(initialization, kind, right, parse_body, await: is_await)

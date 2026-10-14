@@ -9,11 +9,26 @@ class JSAnalyzer::Node::VariableReference
 
   attr_reader :text, :range
   attr_accessor :scope, :declaration
+  attr_writer :read, :write
 
   def initialize(text, scope, range: nil)
     @text = text
     @scope = scope
     @range = range
+    @read = true
+    @write = false
+  end
+
+  # Whether the value is used. False only for the target of a plain
+  # assignment (`x = 1`); `x += 1` and `x++` both read and write.
+  def read?
+    @read
+  end
+
+  # Whether a value is assigned: by `=`, a compound assignment, `++`/`--`,
+  # a destructuring assignment, or `for (x of xs)`
+  def write?
+    @write
   end
 
   def identifier

@@ -187,4 +187,32 @@ class JSAnalyzer::ScopeTest < Minitest::Test
     assert_match(/at 1:10/, error.message)
   end
 
+  # [read?, write?] for each reference to `name`, in source order
+  def access(program, name)
+    declaration(program, name).references.sort_by { it.range.begin }.map { [it.read?, it.write?] }
+  end
+
+  test 'references know whether they read or write' do
+    program = JSAnalyzer.parse("let a = 1, b, c; a = 2; a += 1; b = a; c++; --c; f(a);")
+
+    assert_equal [[false, true], [true, true], [true, false], [true, false]], access(program, 'a')
+    assert_equal [[false, true]], access(program, 'b')
+    assert_equal [[true, true], [true, true]], access(program, 'c')
+    assert_equal 3, declaration(program, 'a').reads.size
+    assert_equal 2, declaration(program, 'a').writes.size
+  end
+
+  test 'destructuring assignments and for loops write their targets' do
+    program = JSAnalyzer.parse("let a, b, c, d, e; [a, { b, x: c }, ...d] = v; ({ e = 1 } = w); for (a of xs) {}")
+
+    %w(b c d e).each { assert_equal [[false, true]], access(program, it), it }
+    assert_equal [[false, true], [false, true]], access(program, 'a')
+  end
+
+  test 'a variable that is never reassigned has no writes' do
+    program = JSAnalyzer.parse("let a = 1, b = 2; b = a;")
+    assert_empty declaration(program, 'a').writes
+    refute_empty declaration(program, 'b').writes
+  end
+
 end
