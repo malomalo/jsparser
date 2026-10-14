@@ -633,6 +633,13 @@ class JSAnalyzer::Parser
     until gobble(/\p{Space}*\}/)
       if gobble(/\p{Space}*\.\.\./)
         pattern.add(parse_binding_target(kind), rest: true)
+      elsif (key = parse_pattern_key)
+        # A string, number or computed key: `'a-b': x`, `0: y`, `[k]: z`.
+        # Only a plain name can be used without `: target`.
+        gobble!(/\p{Space}*:/)
+        value = parse_binding_target(kind)
+        default = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
+        pattern.add(key[0], value, default: default, computed: key[1])
       else
         m = gobble!(/\p{Space}*(#{IDENTIFIER})/o)
         if gobble(/\p{Space}*:/)
@@ -651,6 +658,22 @@ class JSAnalyzer::Parser
       break
     end
     pattern
+  end
+
+  # An object pattern key other than a plain name, as [key, computed]: a
+  # String node, a number (as written), or a computed key's expression.
+  # Returns nil if the next key is a name.
+  def parse_pattern_key
+    if (m = gobble(/\p{Space}*(["'])/))
+      quote = m[1]
+      [JSAnalyzer::Node::String.new(quoted_value(quote), quote), false]
+    elsif (m = gobble(/\p{Space}*(#{NUMBER})/o))
+      [m[1], false]
+    elsif gobble(/\p{Space}*\[/)
+      key = expression
+      gobble!(/\p{Space}*\]/)
+      [key, true]
+    end
   end
 
   # `[a, , b = 1, [c], ...rest]`, after the `[`

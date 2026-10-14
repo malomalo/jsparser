@@ -291,4 +291,15 @@ class JSAnalyzer::ScopeTest < Minitest::Test
     assert_equal 1, declaration(program, 'ns').references.size
   end
 
+  test 'destructuring with string, number and computed keys' do
+    source = "const k = 'z'; const { 'a-b': x, 0: y, [k]: z = 1, w } = o; function f({ 'q': p }) { return p; }"
+    program = JSAnalyzer.parse(source)
+
+    assert_equal "const k = 'z';\nconst { 'a-b': x, 0: y, [k]: z = 1, w } = o;\nfunction f({ 'q': p }) {\n    return p;\n};\n", program.to_js
+    %w(x y z w).each { assert_equal 'const', declaration(program, it).kind, it }
+    assert_equal 'param', declaration(program, 'p').kind
+    assert_equal 1, declaration(program, 'k').references.size, "the computed key reads k"
+    assert_empty declarations(program, 'a-b')
+  end
+
 end
