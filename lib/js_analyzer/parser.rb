@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'set'
 
 # Parses JavaScript into JSAnalyzer::Node trees, reading tokens from a
@@ -38,6 +40,12 @@ class JSAnalyzer::Parser
   }
   PREFIX_PRECEDENCE = 15
   RIGHT_ASSOCIATIVE = ASSIGNMENT_OPERATORS + %w(**)
+
+  ACCESSORS = %w(get set).freeze
+  IMPORT_ATTRIBUTE_KEYWORDS = %w(with assert).freeze
+  THIS_OR_SUPER = %w(this super).freeze
+  FOR_IN_OF = %w(in of).freeze
+  SWITCH_CASES = %w(case default).freeze
 
   # Keywords that start a statement, so after a complete expression they
   # start the next one
@@ -84,9 +92,14 @@ class JSAnalyzer::Parser
     advance if peek.punctuator?(value)
   end
 
-  # Consumes the next token if it's one of the names (keywords)
-  def accept_name(*values)
-    advance if peek.name?(*values)
+  # Consumes the next token if it's the name (keyword) `value`
+  def accept_name(value)
+    advance if peek.name?(value)
+  end
+
+  # Consumes the next token if it's one of the names
+  def accept_name_in(values)
+    advance if peek.name_in?(values)
   end
 
   def at?(value)
@@ -139,7 +152,7 @@ class JSAnalyzer::Parser
     statements = []
     loop do
       token = peek(regex: true)
-      break if token.eof? || token.punctuator?('}') || (stop_names && token.name?(*stop_names))
+      break if token.eof? || token.punctuator?('}') || (stop_names && token.name_in?(stop_names))
 
       st = statement_list_item
       statements << st if st
@@ -324,7 +337,7 @@ class JSAnalyzer::Parser
         key, computed = parse_property_key
         expect('(')
         obj.shorthand(parse_function(key, false, true, :class, computed: computed))
-      elsif token.name?('get', 'set') && property_key_next?
+      elsif token.name_in?(ACCESSORS) && property_key_next?
         # Getter or setter: `get name() {}`, `set [expr](v) {}`
         key, computed = parse_property_key
         expect('(')
@@ -503,6 +516,7 @@ class JSAnalyzer::Parser
   end
 
   CLASS_MODIFIERS = %w(static get set async).freeze
+  CLASS_MEMBER_ENDS = ['(', '=', ';', '}'].freeze
 
   def parse_class_part
     token = advance
@@ -510,7 +524,7 @@ class JSAnalyzer::Parser
 
     # static, get, set and async are member names when nothing follows them,
     # e.g. `get(key) {}` or `static = 1`
-    if token.name?(*CLASS_MODIFIERS) && (peek.punctuator?('(', '=', ';', '}') || peek.newline_before)
+    if token.name_in?(CLASS_MODIFIERS) && (peek.punctuator_in?(CLASS_MEMBER_ENDS) || peek.newline_before)
       return parse_class_member(token.value, false, false)
     end
 
@@ -649,7 +663,7 @@ class JSAnalyzer::Parser
   # `with { type: "json" }` (or the older `assert { ... }`) after the module
   # specifier of an import or export. Returns [keyword, object] or nil.
   def parse_import_attributes
-    return unless (keyword = accept_name('with', 'assert'))
+    return unless (keyword = accept_name_in(IMPORT_ATTRIBUTE_KEYWORDS))
     expect('{')
     [keyword.value, parse_object]
   end
@@ -1027,7 +1041,7 @@ class JSAnalyzer::Parser
 
     callee = if accept('(')
       JSAnalyzer::Node::Group.new(parse_args)
-    elsif (token = accept_name('this', 'super'))
+    elsif (token = accept_name_in(THIS_OR_SUPER))
       JSAnalyzer::Node::Keyword.new(token.value)
     elsif accept_name('new')
       parse_new
@@ -1057,7 +1071,7 @@ class JSAnalyzer::Parser
       expect('(')
       initialization = statement(no_in: true)
 
-      if (kind = accept_name('in', 'of'))
+      if (kind = accept_name_in(FOR_IN_OF))
         mark_written(initialization) # for (x of xs) assigns x
         right = statement
         expect(')')
@@ -1095,10 +1109,10 @@ class JSAnalyzer::Parser
     node = JSAnalyzer::Node::Switch.new(parse_condition)
     expect('{')
     with_scope(:block) do
-      while (kind = accept_name('case', 'default'))
+      while (kind = accept_name_in(SWITCH_CASES))
         test = kind.value == 'case' ? statement : nil
         expect(':')
-        node.cases << [test, parse_statement_list(%w(case default))]
+        node.cases << [test, parse_statement_list(SWITCH_CASES)]
       end
     end
     expect('}')
