@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'stream_parser'
+
 class JSAnalyzer
   
   autoload :Node, 'js_analyzer/node'

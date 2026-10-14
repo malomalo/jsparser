@@ -1,5 +1,3 @@
-require 'strscan'
-
 # Splits JavaScript source into tokens on demand. The parser asks for each
 # token as it needs it, saying whether a regex can start there: a `/` after
 # a value is division, and anywhere else starts a regex. Template literals
@@ -9,6 +7,8 @@ require 'strscan'
 # break came before it, for automatic semicolon insertion. Positions are
 # byte offsets into the source.
 class JSAnalyzer::Tokenizer
+
+  include StreamParser
 
   # type        :name (identifiers and keywords), :private_name (#x),
   #             :number, :string, :regex, :template (the opening backtick),
@@ -65,9 +65,8 @@ class JSAnalyzer::Tokenizer
   attr_reader :last
 
   def initialize(source)
-    @source = source
-    @scanner = StringScanner.new(source)
-    @scanner.skip(/#![^\n]*/) # hashbang, e.g. #!/usr/bin/env node
+    super
+    scan(/#![^\n]*/) # hashbang, e.g. #!/usr/bin/env node
     @peeked = nil
     @last = nil
   end
@@ -78,7 +77,7 @@ class JSAnalyzer::Tokenizer
       # A token read as `/` (division) is a regex in the other mode, and
       # the other way around, so read it again
       return @peeked unless @peeked_regex != regex && slash?(@peeked)
-      @scanner.pos = @peeked.lex_start
+      @index = @peeked.lex_start
     end
 
     @peeked_regex = regex
@@ -95,7 +94,7 @@ class JSAnalyzer::Tokenizer
   # Puts back `token`, the most recently consumed one or a token before it,
   # so that it's read again next
   def unread(token)
-    @scanner.pos = token.lex_start
+    @index = token.lex_start
     @peeked = nil
   end
 
@@ -103,22 +102,22 @@ class JSAnalyzer::Tokenizer
   # ends an interpolation. Returns the text and whether an interpolation
   # (`${`) or the end of the template (:end) follows.
   def template_chunk
-    @scanner.pos = @peeked.lex_start if @peeked
+    @index = @peeked.lex_start if @peeked
     @peeked = nil
 
-    text = @scanner.scan(TEMPLATE_TEXT)
-    if @scanner.skip(/\$\{/)
+    text = scan(TEMPLATE_TEXT)
+    if scan(/\$\{/)
       [text, :interpolation]
-    elsif @scanner.skip(/`/)
+    elsif scan(/`/)
       [text, :end]
     else
-      raise syntax_error("unterminated template literal", @scanner.pos)
+      raise syntax_error("unterminated template literal", @index)
     end
   end
 
   # A JSAnalyzer::SyntaxError at `position`, with the line and column and the
   # source around it
-  def syntax_error(message, position = @scanner.pos)
+  def syntax_error(message, position = @index)
     before = @source.byteslice(0, [position, @source.bytesize].min)
     after = @source.byteslice(before.bytesize..)
     line = before.count("\n") + 1
@@ -134,39 +133,61 @@ class JSAnalyzer::Tokenizer
 
   private
 
+  # Matches re at the current position (@index, a byte offset) and moves past
+  # it, returning the text. StreamParser#gobble searches the rest of the
+  # source for a match and then checks it starts here; anchoring with \G
+  # and a never-matching `|(?!)` alternative makes Onigmo try only the
+  # current position (without the alternative it first searches ahead for
+  # a literal every match needs, such as the `/` of a comment).
+  def scan(re)
+    return unless @source.byteindex(ANCHORED[re], @index)
+
+    @old_index = @index
+    @match = $~[0]
+    @index = $~.byteend(0)
+    @match
+  end
+
+  # Whether re matches at the current position
+  def match?(re)
+    !!@source.byteindex(ANCHORED[re], @index)
+  end
+
+  ANCHORED = Hash.new { |cache, re| cache[re] = Regexp.new("\\G(?:#{re.source}|(?!))", re.options) }.compare_by_identity
+
   def slash?(token)
     token.type == :regex || token.punctuator?('/', '/=')
   end
 
   def lex(regex)
-    lex_start = @scanner.pos
-    skipped = @scanner.scan(SKIP)
+    lex_start = @index
+    skipped = scan(SKIP)
     newline = skipped ? skipped.match?(LINE_TERMINATOR) : false
-    raise syntax_error("unterminated comment") if @scanner.match?(%r{/\*})
+    raise syntax_error("unterminated comment") if match?(%r{/\*})
 
-    start = @scanner.pos
-    return Token.new(:eof, nil, start, start, newline, lex_start) if @scanner.eos?
+    start = @index
+    return Token.new(:eof, nil, start, start, newline, lex_start) if eos?
 
     type, value = case @source.getbyte(start)
     when 0x22, 0x27 # " '
-      [:string, @scanner.scan(STRING) || raise(syntax_error("unterminated string"))]
+      [:string, scan(STRING) || raise(syntax_error("unterminated string"))]
     when 0x60 # `
-      @scanner.pos += 1
+      @index += 1
       [:template, '`']
     when 0x23 # #
-      [:private_name, @scanner.scan(PRIVATE_NAME)]
+      [:private_name, scan(PRIVATE_NAME)]
     when 0x30..0x39 # 0-9
-      [:number, @scanner.scan(NUMBER)]
+      [:number, scan(NUMBER)]
     when 0x2E # .
-      (number = @scanner.scan(NUMBER)) ? [:number, number] : [:punctuator, @scanner.scan(PUNCTUATOR)]
+      (number = scan(NUMBER)) ? [:number, number] : [:punctuator, scan(PUNCTUATOR)]
     when 0x2F # /
-      (regex && (re = @scanner.scan(REGEX))) ? [:regex, re] : [:punctuator, @scanner.scan(PUNCTUATOR)]
+      (regex && (re = scan(REGEX))) ? [:regex, re] : [:punctuator, scan(PUNCTUATOR)]
     else
-      (name = @scanner.scan(NAME)) ? [:name, name] : [:punctuator, @scanner.scan(PUNCTUATOR)]
+      (name = scan(NAME)) ? [:name, name] : [:punctuator, scan(PUNCTUATOR)]
     end
     raise syntax_error("unexpected #{@source.byteslice(start, 4).scrub[0].inspect}") unless value
 
-    Token.new(type, value, start, @scanner.pos, newline, lex_start)
+    Token.new(type, value, start, @index, newline, lex_start)
   end
 
 end
