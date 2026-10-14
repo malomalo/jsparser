@@ -215,4 +215,28 @@ class JSAnalyzer::ScopeTest < Minitest::Test
     refute_empty declaration(program, 'b').writes
   end
 
+  test 'default parameters are in their own scope, apart from the body' do
+    program = JSAnalyzer.parse("let x = 1; function f(a = x, b = a) { var x = 2; return x + b; }")
+    outer_x, body_x = declarations(program, 'x').sort_by { it.range.begin }
+
+    assert_equal :program, outer_x.scope.kind
+    assert_equal :function_body, body_x.scope.kind
+    assert_equal 1, outer_x.references.size, "the x in a's default is the outer x"
+    assert_equal 1, body_x.references.size
+    assert_equal 1, declaration(program, 'a').references.size
+  end
+
+  test 'simple parameters share the body scope' do
+    program = JSAnalyzer.parse("function f(a) { var a; return a; }")
+    a = declarations(program, 'a')
+    assert(a.all? { it.scope.kind == :function })
+    assert program.scopes.none? { it.kind == :function_body }
+  end
+
+  test 'arguments in a default value belongs to the function' do
+    program = JSAnalyzer.parse("function f(a = arguments, { b }) { return arguments; }")
+    assert_equal 2, declaration(program, 'arguments').references.size
+    assert_equal :function, declaration(program, 'arguments').scope.kind
+  end
+
 end

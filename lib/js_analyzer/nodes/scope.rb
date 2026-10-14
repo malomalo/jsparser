@@ -1,8 +1,9 @@
 # The variables declared in a part of the program and the references made
 # in it. Scopes form a tree from the Program down.
 #
-#   kind  :program, :function, :arrow, :class, :static_block, :block or
-#         :catch
+#   kind  :program, :function, :arrow, :class, :static_block, :block,
+#         :catch, or :function_body (the body of a function whose parameters
+#         aren't simple, which has its own scope)
 #
 # References are resolved as each scope closes (see close!), since
 # JavaScript lets a variable be used before it's declared.
@@ -12,7 +13,7 @@ class JSAnalyzer::Node::Scope
   attr_accessor :parent_scope
 
   # Scopes that `var` declarations belong to
-  VAR_SCOPES = %i(program function arrow static_block)
+  VAR_SCOPES = %i(program function arrow function_body static_block)
 
   def initialize(scope: nil, statements: [], kind: :block)
     @statements = statements

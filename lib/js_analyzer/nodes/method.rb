@@ -8,6 +8,20 @@ class JSAnalyzer::Node::Method
   # The VariableDeclaration for a function's name, if it has one
   attr_reader :binding
 
+  attr_writer :body_scope
+
+  # The scope of the function's body. It's the same as `scope`, where the
+  # parameters are declared, unless the parameters aren't simple (see
+  # simple_parameters?).
+  def body_scope
+    @body_scope || @scope
+  end
+
+  # Whether every parameter is a plain name: no defaults, patterns or rest
+  def simple_parameters?
+    @args.all?(JSAnalyzer::Node::VariableDeclaration)
+  end
+
   # declare: where a function's name is declared, :outer for a function
   #          declaration, :inner for a function expression (where the name is
   #          only visible inside), or nil for methods and arrow functions

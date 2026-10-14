@@ -446,8 +446,15 @@ class JSAnalyzer::Parser
   end
   
   def parse_function_body(fn, brackets = true, as_expression = false)
+    unless fn.simple_parameters?
+      # With defaults, patterns or rest parameters, the parameters are in a
+      # scope of their own and the body's declarations in another, so a
+      # default can't see a `var` in the body
+      fn.body_scope = JSAnalyzer::Node::Scope.new(scope: fn.scope, kind: :function_body)
+    end
+
     begin
-      @scope = fn.scope
+      @scope = fn.body_scope
       if brackets
         fn.body.concat(parse_statement_list)
       else
@@ -456,6 +463,7 @@ class JSAnalyzer::Parser
         fn.body << expression
       end
     ensure
+      fn.body_scope.close! unless fn.body_scope.equal?(fn.scope)
       fn.scope.close!
       @scope = fn.scope.parent_scope
     end
