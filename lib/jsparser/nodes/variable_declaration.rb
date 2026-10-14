@@ -1,8 +1,8 @@
 # A binding: where a variable is declared, e.g. the `a` in `let a = 1`, a
 # function parameter, an import, or a function or class name.
 #
-#   kind        "var", "let", "const", "param", "function", "class",
-#               "import", "catch", or for variables that are never declared,
+#   kind        "var", "let", "const", "using", "await using", "param",
+#               "function", "class", "import", "catch", or for variables that are never declared,
 #               "global" (and "arguments" inside a function)
 #   identifier  the name, shared with every reference (see Identifier)
 #   text        the name as written in the source

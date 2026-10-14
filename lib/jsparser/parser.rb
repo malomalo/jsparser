@@ -996,7 +996,19 @@ class JSParser::Parser
       return end_expression(token, stack) unless stack.empty?
       stack << parse_new
     when 'delete', 'typeof', 'void', 'await'
+      if value == 'await' && stack.empty? && peek.name?('using') && !peek.newline_before
+        # `await using x = ...`, unless `using` is a name (`await using(x)`)
+        using = advance
+        return Return.new(parse_using('await using', token)) if using_declaration_next?
+        unread(using)
+      end
       prefix_operator(token, stack)
+    when 'using'
+      # A declaration only when a name follows on the same line; otherwise a
+      # variable named `using`, as in `using(x)` or `for (using of xs)`
+      return Return.new(parse_using('using', token)) if stack.empty? && using_declaration_next?
+      return end_expression(token, stack) unless stack.empty?
+      stack << @scope.var(value, range: token.range)
     when 'var', 'let', 'const'
       node = JSParser::Node::VariableStatement.new(value)
       loop do
@@ -1059,6 +1071,36 @@ class JSParser::Parser
       return end_expression(token, stack) unless stack.empty?
       stack << @scope.var(value, range: token.range)
     end
+  end
+
+  NOT_USING_NAMES = %w(in instanceof of).freeze
+
+  # After `using`: whether a variable name follows on the same line
+  def using_declaration_next?
+    token = peek
+    token.name? && !token.newline_before && !token.name_in?(NOT_USING_NAMES)
+  end
+
+  # A `using` or `await using` declaration, after the keyword(s): names only
+  # (no patterns), each with an initializer except in `for (using x of xs)`
+  def parse_using(kind, keyword)
+    if @scope.kind == :switch
+      raise syntax_error("a #{kind} declaration can't be directly in a case", keyword)
+    elsif @scope.kind == :program && @scope.source_type != :module
+      raise syntax_error("a #{kind} declaration can't be at the top level of a script", keyword)
+    end
+
+    node = JSParser::Node::VariableStatement.new(kind)
+    loop do
+      name = expect_name
+      target = @scope.declare(kind, name.value, range: name.range)
+      init = accept('=') ? required(expression) : nil
+      raise syntax_error("a #{kind} declaration needs an initializer") if init.nil? && !peek.name?('of')
+      node.add(target, init)
+      break unless accept(',')
+    end
+    accept(';')
+    node
   end
 
   # After `async`: whether a function (`async function`, `async (x) =>`,
@@ -1152,7 +1194,7 @@ class JSParser::Parser
   def parse_switch
     node = JSParser::Node::Switch.new(parse_condition)
     expect('{')
-    with_scope(:block) do
+    with_scope(:switch) do
       while (kind = accept_name_in(SWITCH_CASES))
         test = kind.value == 'case' ? statement : nil
         expect(':')

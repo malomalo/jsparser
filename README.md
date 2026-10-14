@@ -88,8 +88,8 @@ count.writes.size       # => 1, `count += step`
 count.reads.size        # => 2, `count += step` and `render(count)`
 ```
 
-The kinds are `var`, `let`, `const`, `param`, `function`, `class`, `import`
-and `catch`. A variable that's used but never declared gets an implicit
+The kinds are `var`, `let`, `const`, `using`, `await using`, `param`,
+`function`, `class`, `import` and `catch`. A variable that's used but never declared gets an implicit
 declaration of kind `global` in the program scope (or `arguments`, in a
 function), so every reference has a declaration.
 

@@ -2,7 +2,7 @@
 # in it. Scopes form a tree from the Program down.
 #
 #   kind  :program, :function, :arrow, :class, :static_block, :block,
-#         :catch, or :function_body (the body of a function whose parameters
+#         :switch (a switch's cases), :catch, or :function_body (the body of a function whose parameters
 #         aren't simple, which has its own scope)
 #
 # References are resolved as each scope closes (see close!), since
@@ -54,7 +54,7 @@ class JSParser::Node::Scope
     declaration
   end
 
-  LEXICAL = %w(let const class).freeze
+  LEXICAL = ['let', 'const', 'class', 'using', 'await using'].freeze
 
   # In non-strict code a function declared in a block (`{ function f() {} }`)
   # is also a var in the enclosing function (Annex B.3.3 of the spec), unless

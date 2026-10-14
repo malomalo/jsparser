@@ -1,6 +1,7 @@
-# A `var`, `let` or `const` statement, e.g. `let a = 1, { b } = c`.
+# A `var`, `let`, `const`, `using` or `await using` statement, e.g.
+# `let a = 1, { b } = c`.
 #
-#   kind         "var", "let" or "const"
+#   kind         "var", "let", "const", "using" or "await using"
 #   declarators  [target, init] pairs, where target is a VariableDeclaration
 #                or a destructuring pattern, and init may be nil
 class JSParser::Node::VariableStatement
