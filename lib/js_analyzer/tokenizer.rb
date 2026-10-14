@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'strscan'
 
 # Splits JavaScript source into tokens on demand. The parser asks for each
@@ -19,14 +21,25 @@ class JSAnalyzer::Tokenizer
   #             before
   # lex_start   where lexing it began, before the whitespace and comments
   #             in front of it
-  Token = Struct.new(:type, :value, :start, :end, :newline_before, :lex_start) do
-    def punctuator?(*values)
+  # regex       whether it was read where a regex could start
+  Token = Struct.new(:type, :value, :start, :end, :newline_before, :lex_start, :regex) do
+    # The punctuator `expected`. (One value, not a splat, as this is called
+    # constantly and a splat allocates an array per call.)
+    def punctuator?(expected)
+      type == :punctuator && value == expected
+    end
+
+    def punctuator_in?(values)
       type == :punctuator && values.include?(value)
     end
 
-    # A name, or with values, one of those names
-    def name?(*values)
-      type == :name && (values.empty? || values.include?(value))
+    # A name, or with expected, that name
+    def name?(expected = nil)
+      type == :name && (expected.nil? || value == expected)
+    end
+
+    def name_in?(values)
+      type == :name && values.include?(value)
     end
 
     def eof?
@@ -40,7 +53,6 @@ class JSAnalyzer::Tokenizer
 
   # Whitespace and comments
   SKIP = %r{(?:[\p{Space}\u{feff}]+|//[^\r\n\u2028\u2029]*|/\*.*?\*/)+}m
-  LINE_TERMINATOR = /[\r\n\u2028\u2029]/
 
   NAME = /[\p{Alpha}_$][\p{Alpha}_$\d]*/
   PRIVATE_NAME = /\#[\p{Alpha}_$][\p{Alpha}_$\d]*/
@@ -52,14 +64,43 @@ class JSAnalyzer::Tokenizer
 
   PUNCTUATORS = %w(
     >>>= ... === !== **= <<= >>= >>> &&= ||= ??=
-    => == != <= >= += -= *= /= %= &= |= ^= ** ++ -- << >> && || ??
+    => == != <= >= += -= *= /= %= &= |= ^= ** ++ -- << >> && || ?? ?.
     { } ( ) [ ] ; , < > + - * / % & | ^ ! ~ ? : = .
-  ).sort_by { -it.size }
-  # `?.` isn't optional chaining before a digit: `a?.5:1` is a ternary
-  PUNCTUATOR = /\?\.(?!\d)|#{Regexp.union(PUNCTUATORS)}/
+  ).map(&:freeze)
+
+  # The punctuators starting with each byte, longest first, as [punctuator,
+  # its bytes], so they can be matched without a regex or allocating
+  PUNCTUATOR_CANDIDATES = PUNCTUATORS.group_by(&:ord).transform_values do |punctuators|
+    punctuators.sort_by { -it.bytesize }.map { [it, it.bytes] }.freeze
+  end.freeze
 
   # Template literal text up to `${` or the closing backtick, as written
   TEMPLATE_TEXT = /(?:[^`\\$]|\\.|\$(?!\{))*/m
+
+  # How to read a token, by its first byte
+  BYTE_CLASS = Array.new(256, :punctuator).tap do |classes|
+    [*'a'..'z', *'A'..'Z', '_', '$'].each { classes[it.ord] = :name }
+    (0x80..0xFF).each { classes[it] = :name } # a non-ASCII letter
+    ('0'..'9').each { classes[it.ord] = :number }
+    '{}()[];,~:'.each_char { classes[it.ord] = :single }
+    classes['.'.ord] = :dot
+    classes['/'.ord] = :slash
+    classes['"'.ord] = classes["'".ord] = :string
+    classes['`'.ord] = :template
+    classes['#'.ord] = :hash
+  end.freeze
+
+  # Punctuators that are always one character, by byte, shared so reading
+  # one doesn't allocate
+  SINGLE_PUNCTUATORS = '{}()[];,~:'.each_char.to_h { [it.ord, it.freeze] }.freeze
+
+  # Bytes that can start whitespace or a comment: ASCII whitespace, `/`, and
+  # the first byte of a non-ASCII character (which may be a space)
+  SKIP_START = Array.new(256, false).tap do |starts|
+    [9, 10, 11, 12, 13, 32, '/'.ord, *0x80..0xFF].each { starts[it] = true }
+  end.freeze
+
+  DIGIT = Array.new(256, false).tap { |digits| ('0'..'9').each { digits[it.ord] = true } }.freeze
 
   # The most recently consumed token
   attr_reader :last
@@ -68,43 +109,48 @@ class JSAnalyzer::Tokenizer
     @source = source
     @scanner = StringScanner.new(source)
     @scanner.skip(/#![^\n]*/) # hashbang, e.g. #!/usr/bin/env node
-    @peeked = nil
+    # Tokens read but not consumed, the next first; the scanner is after the
+    # last of them
+    @buffer = []
     @last = nil
   end
 
   # The next token, without consuming it
   def peek(regex: false)
-    if @peeked
+    if (token = @buffer.first)
       # A token read as `/` (division) is a regex in the other mode, and
-      # the other way around, so read it again
-      return @peeked unless @peeked_regex != regex && slash?(@peeked)
-      @scanner.pos = @peeked.lex_start
+      # the other way around, so read it and what follows again
+      return token unless token.regex != regex && slash?(token)
+      @scanner.pos = token.lex_start
+      @buffer.clear
     end
 
-    @peeked_regex = regex
-    @peeked = lex(regex)
+    token = lex(regex)
+    @buffer << token
+    token
   end
 
   # Consumes and returns the next token
   def next(regex: false)
     token = peek(regex: regex)
-    @peeked = nil
+    @buffer.shift
     @last = token
   end
 
-  # Puts back `token`, the most recently consumed one or a token before it,
-  # so that it's read again next
+  # Puts back `token`, the most recently consumed one (or, after putting
+  # that back, the one before it), so that it's the next token again
   def unread(token)
-    @scanner.pos = token.lex_start
-    @peeked = nil
+    @buffer.unshift(token)
   end
 
   # Reads template literal text, after the opening backtick or the `}` that
   # ends an interpolation. Returns the text and whether an interpolation
   # (`${`) or the end of the template (:end) follows.
   def template_chunk
-    @scanner.pos = @peeked.lex_start if @peeked
-    @peeked = nil
+    unless @buffer.empty?
+      @scanner.pos = @buffer.first.lex_start
+      @buffer.clear
+    end
 
     text = @scanner.scan(TEMPLATE_TEXT)
     if @scanner.skip(/\$\{/)
@@ -134,39 +180,93 @@ class JSAnalyzer::Tokenizer
 
   private
 
+  SLASHES = %w(/ /=).freeze
+
   def slash?(token)
-    token.type == :regex || token.punctuator?('/', '/=')
+    token.type == :regex || token.punctuator_in?(SLASHES)
+  end
+
+  # Whether the source from `from` up to `to` has a line break: \n, \r, or
+  # U+2028/U+2029 (E2 80 A8/A9 in UTF-8). Looks at the bytes so skipping
+  # whitespace doesn't allocate a string.
+  def line_terminator_between?(from, to)
+    i = from
+    while i < to
+      byte = @source.getbyte(i)
+      return true if byte == 10 || byte == 13
+      return true if byte == 0xE2 && @source.getbyte(i + 1) == 0x80 && (@source.getbyte(i + 2) | 1) == 0xA9
+      i += 1
+    end
+    false
+  end
+
+  # The punctuator at `start`, moving past it, or nil
+  def lex_punctuator(start)
+    PUNCTUATOR_CANDIDATES[@source.getbyte(start)]&.each do |punctuator, bytes|
+      # A plain loop: an enumerator here allocated more than anything else
+      size = bytes.size
+      i = 1
+      i += 1 while i < size && @source.getbyte(start + i) == bytes[i]
+      next unless i == size
+      # `?.` isn't optional chaining before a digit: `a?.5:1` is a ternary
+      next if punctuator == '?.' && DIGIT[@source.getbyte(start + 2) || 0]
+
+      @scanner.pos = start + bytes.size
+      return punctuator
+    end
+    nil
   end
 
   def lex(regex)
     lex_start = @scanner.pos
-    skipped = @scanner.scan(SKIP)
-    newline = skipped ? skipped.match?(LINE_TERMINATOR) : false
-    raise syntax_error("unterminated comment") if @scanner.match?(%r{/\*})
-
+    @scanner.skip(SKIP) if SKIP_START[@source.getbyte(lex_start) || 0]
     start = @scanner.pos
-    return Token.new(:eof, nil, start, start, newline, lex_start) if @scanner.eos?
+    newline = start > lex_start && line_terminator_between?(lex_start, start)
+    byte = @source.getbyte(start)
+    return Token.new(:eof, nil, start, start, newline, lex_start, regex) unless byte
 
-    type, value = case @source.getbyte(start)
-    when 0x22, 0x27 # " '
-      [:string, @scanner.scan(STRING) || raise(syntax_error("unterminated string"))]
-    when 0x60 # `
-      @scanner.pos += 1
-      [:template, '`']
-    when 0x23 # #
-      [:private_name, @scanner.scan(PRIVATE_NAME)]
-    when 0x30..0x39 # 0-9
-      [:number, @scanner.scan(NUMBER)]
-    when 0x2E # .
-      (number = @scanner.scan(NUMBER)) ? [:number, number] : [:punctuator, @scanner.scan(PUNCTUATOR)]
-    when 0x2F # /
-      (regex && (re = @scanner.scan(REGEX))) ? [:regex, re] : [:punctuator, @scanner.scan(PUNCTUATOR)]
+    type = :punctuator
+    value = case BYTE_CLASS[byte]
+    when :name
+      type = :name
+      @scanner.scan(NAME)
+    when :single
+      @scanner.pos = start + 1
+      SINGLE_PUNCTUATORS[byte]
+    when :number
+      type = :number
+      @scanner.scan(NUMBER)
+    when :dot
+      if DIGIT[@source.getbyte(start + 1) || 0]
+        type = :number
+        @scanner.scan(NUMBER)
+      else
+        lex_punctuator(start)
+      end
+    when :slash
+      raise syntax_error("unterminated comment") if @source.getbyte(start + 1) == 0x2A # /*
+      if regex && (re = @scanner.scan(REGEX))
+        type = :regex
+        re
+      else
+        lex_punctuator(start)
+      end
+    when :string
+      type = :string
+      @scanner.scan(STRING) || raise(syntax_error("unterminated string"))
+    when :template
+      type = :template
+      @scanner.pos = start + 1
+      '`'
+    when :hash
+      type = :private_name
+      @scanner.scan(PRIVATE_NAME)
     else
-      (name = @scanner.scan(NAME)) ? [:name, name] : [:punctuator, @scanner.scan(PUNCTUATOR)]
+      lex_punctuator(start)
     end
     raise syntax_error("unexpected #{@source.byteslice(start, 4).scrub[0].inspect}") unless value
 
-    Token.new(type, value, start, @scanner.pos, newline, lex_start)
+    Token.new(type, value, start, @scanner.pos, newline, lex_start, regex)
   end
 
 end
