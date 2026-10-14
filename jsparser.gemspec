@@ -6,8 +6,14 @@ Gem::Specification.new do |s|
   s.authors       = ["Jon Bracy"]
   s.email         = ["jonbracy@gmail.com"]
   s.homepage      = "https://github.com/malomalo/jsparser"
-  s.summary       = ''
-  s.description   = ""
+  s.summary       = 'A JavaScript parser in Ruby, with scope analysis'
+  s.description   = <<~DESC
+    Parses JavaScript into a tree of nodes that prints back as JavaScript,
+    keeping comments. Every variable reference is resolved to its
+    declaration, so you can list the variables in scope, tell reads from
+    writes, and rename a variable everywhere it's used. Output is checked
+    against acorn.
+  DESC
   s.license       = "MIT"
 
   s.extra_rdoc_files = %w(README.md)
