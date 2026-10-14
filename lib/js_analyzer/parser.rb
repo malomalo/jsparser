@@ -62,20 +62,6 @@ class JSAnalyzer::Parser
     end
   end
 
-  # Moves back `by` characters. StreamParser's rewind copies and counts the
-  # source before the current position, which costs the length of the
-  # source in non-ASCII text; this steps back over UTF-8 continuation bytes
-  # instead.
-  # TODO: move this into StreamParser
-  def rewind(by = 1)
-    return super unless @source.encoding == Encoding::UTF_8
-
-    by.times do
-      @index -= 1
-      @index -= 1 while @index > 0 && (@source.getbyte(@index) & 0b1100_0000) == 0b1000_0000
-    end
-  end
-
   # Patterns are regex literals compiled once (with /o where they
   # interpolate), so the anchored versions are cached by the pattern itself.
   # `|(?!)` never matches; see COMMENT.
