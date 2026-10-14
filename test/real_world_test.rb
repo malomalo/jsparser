@@ -1,0 +1,172 @@
+require 'test_helper'
+
+# Cases found by parsing real files (node_modules, viking, Rails guides)
+class JSParser::RealWorldTest < Minitest::Test
+
+  test 'comments anywhere whitespace is allowed' do
+    assert_parse("const { a, /* b */ c } = o", "const { a, c } = o;")
+    assert_parse("switch (x) { case 1: a(); // next\n case 2: b(); }", <<~JS)
+        switch (x) {
+            case 1:
+                a(); // next
+            case 2:
+                b();
+        };
+    JS
+    assert_parse("// walk\nouter: while (x) { break outer; }", <<~JS)
+        // walk
+        outer: while (x) {
+            break outer;
+        };
+    JS
+  end
+
+  test 'hashbang' do
+    assert_parse("#!/usr/bin/env node\nrun()", "#!/usr/bin/env node\nrun();")
+  end
+
+  test 'template literals' do
+    assert_parse('x = `$5 and ${a} \` done`', 'x = `$5 and ${a} \` done`;')
+    assert_parse('html`<p>${x}</p>`', 'html`<p>${x}</p>`;')
+  end
+
+  test 'dynamic import' do
+    assert_parse('import(name).then((m) => m.default)', 'import(name).then((m) => m.default);')
+  end
+
+  test 'function and class expressions continue the expression' do
+    assert_parse('x = function () { a(); }.apply(this)', <<~JS)
+        x = function () {
+            a();
+        }.apply(this);
+    JS
+    assert_parse('const C = class {}.name', <<~JS)
+        const C = class {
+        }.name;
+    JS
+  end
+
+  test 'async only applies to the function after it' do
+    assert_parse('x = async (a) => a || b', 'x = async (a) => a || b;')
+    assert_parse('async(x)', 'async(x);')
+    assert_parse('o = { async: true, async }', 'o = {async: true, async};')
+  end
+
+  test 'destructuring' do
+    assert_parse('const { a, b: { c }, d = 1, ...e } = o, f = 2', 'const { a, b: { c }, d = 1, ...e } = o, f = 2;')
+    assert_parse('const a = 1, [, m, d] = p', 'const a = 1, [ , m, d ] = p;')
+    assert_parse('let [x, [y, z] = [], ...r] = q', 'let [ x, [ y, z ] = [], ...r ] = q;')
+    assert_parse('function f({ e = {} } = {}) {}', 'function f({ e = {} } = {}) { };')
+  end
+
+  test 'arrays' do
+    assert_parse('x = [[], [1, , 2], [3,], [,]]', 'x = [[], [1, , 2], [3], [,]];')
+  end
+
+  test 'object keys that are keywords' do
+    assert_parse('o = { class: 1, if: 2, async() {} }', 'o = {class: 1, if: 2, async() { }};')
+  end
+
+  test 'class members named get, set, static and async' do
+    assert_parse("class A { get(k) { return k; } static = 1; #x\n }", <<~JS)
+        class A {
+            get(k) {
+                return k;
+            };
+            static = 1;
+            #x;
+        };
+    JS
+  end
+
+  test 'return, yield and ++ end at a new line' do
+    assert_parse("function f() { if (a) return\n b() }", <<~JS)
+        function f() {
+            if (a) {
+                return;
+            };
+            b();
+        };
+    JS
+    assert_parse("a\n++b", "a;\n++b;")
+  end
+
+  test 'for await' do
+    assert_parse('async function f() { for await (const c of s) x(c); }', <<~JS)
+        async function f() {
+            for await (const c of s) {
+                x(c);
+            };
+        };
+    JS
+  end
+
+  # Found by comparing with acorn (rake oracle)
+
+  test 'a declarator without an initializer after one with' do
+    assert_parse('var a = 0, i;', 'var a = 0, i;')
+  end
+
+  test 'a prefix operator starts a new statement' do
+    assert_parse("a()\ndelete b.c\nawait d", "a();\ndelete b.c;\nawait d;")
+  end
+
+  test 'calling the result of new' do
+    assert_parse('new Function("a")(1)', 'new Function("a")(1);')
+  end
+
+  test 'with, debugger, new.target and yield*' do
+    assert_parse('with (o) x()', "with (o) {\n    x();\n};")
+    assert_parse('debugger', 'debugger;')
+    assert_parse('function f() { return new.target }', "function f() {\n    return new.target;\n};")
+    assert_parse('function* g() { yield* h() }', "function *g() {\n    yield* h();\n};")
+  end
+
+  test 'private names in expressions' do
+    assert_parse('x = #p in o', 'x = #p in o;')
+  end
+
+  test 'import attributes' do
+    assert_parse('import j from "./a.json" with { type: "json" }', 'import j from "./a.json" with {type: "json"};')
+    assert_parse('export { a } from "./a.json" with { type: "json" }', 'export { a } from "./a.json" with {type: "json"};')
+  end
+
+  test 'import assertions are no longer supported' do
+    # Like any two statements on one line without a `;`
+    error = assert_raises(JSParser::SyntaxError) { JSParser.parse('import j from "./a.json" assert { type: "json" }') }
+    assert_match(/unexpected "assert"/, error.message)
+    # On the next line, `assert` is just the start of another statement
+    assert_parse("import j from './a.json'\nassert(j)", "import j from './a.json';\nassert(j);")
+  end
+
+  test 'statements on one line need a semicolon between them' do
+    ['a b', 'x = 1 y = 2', 'f() g()'].each do |source|
+      assert_raises(JSParser::SyntaxError, source) { JSParser.parse(source) }
+    end
+    assert_parse("a\nb", "a;\nb;")
+    assert_parse("a; b", "a;\nb;")
+    assert_parse("if (a) {} b()", "if (a) { };\nb();")
+    assert_parse("do x(); while (y) z()", "do {\n    x();\n} while (y);\nz();")
+  end
+
+  test 'a missing expression is a syntax error' do
+    ['let x = ;', 'x = ;', 'a + ;', 'a ? : b', 'f(a, , b)', '!;', 'if () {}', 'o = { a: }',
+     '[...]', 'x => ;', 'throw;', 'class A { x = ; }', '`${}`', 'a[]', 'function f(a = ) {}',
+     'const { a = } = o', 'for (x of ) {}', 'export default;'].each do |source|
+      error = assert_raises(JSParser::SyntaxError, source) { JSParser.parse(source) }
+      assert_match(/expected/, error.message, source)
+    end
+    # Where nothing is needed
+    ['let x;', 'return;', '[,]', '[1,]', 'for (;;) {}', 'f()', 'function f() { return }'].each do |source|
+      JSParser.parse(source)
+    end
+  end
+
+  test 'a line starting with ( or [ continues the one before' do
+    # As in JavaScript, no semicolon is inserted before `(` or `[`
+    assert_parse("a = b\n(c)", "a = b(c);")
+    assert_parse("a = b\n[c]", "a = b[c];")
+    assert_parse("a = b\n++c", "a = b;\n++c;")
+  end
+
+end

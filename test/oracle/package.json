@@ -1,0 +1,9 @@
+{
+  "name": "jsparser-oracle",
+  "private": true,
+  "description": "Compares JSParser's output with the original source using acorn",
+  "type": "module",
+  "dependencies": {
+    "acorn": "^8.19.0"
+  }
+}

@@ -1,0 +1,10 @@
+import defaultExport from "module-name1";
+import * as name from "module-name2";
+import { export1 } from "module-name3";
+import { export2 as alias1 } from "module-name4";
+import { export3 , export4 } from "module-name5";
+import { foo , bar } from "module-name/path/to/specific/un-exported/file6";
+import { export5 , export6 as alias2 } from "module-name7";
+import defaultExport2, { export7 } from "module-name8";
+import defaultExport3, * as name2 from "module-name9";
+import "module-name10";
