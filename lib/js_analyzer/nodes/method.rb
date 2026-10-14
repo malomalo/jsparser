@@ -25,9 +25,12 @@ class JSAnalyzer::Node::Method
   # declare: where a function's name is declared, :outer for a function
   #          declaration, :inner for a function expression (where the name is
   #          only visible inside), or nil for methods and arrow functions
+  # computed: whether a name that isn't a String is a computed key
+  # (`[expr]() {}`); false for a quoted key (`"a"() {}`)
   def initialize(scope:, name: nil, async: false, generator: false, type: :function, args: [],
-                 declare: nil, name_range: nil)
+                 declare: nil, name_range: nil, computed: nil)
     @name = name
+    @computed = computed.nil? ? !name.is_a?(::String) : computed
     @async = async
     @type = type
     @scope = JSAnalyzer::Node::Scope.new(scope: scope, kind: type == :arrow ? :arrow : :function)
@@ -47,10 +50,12 @@ class JSAnalyzer::Node::Method
     if @binding
       js << @binding.to_js
     elsif @name
-      js << if !@name.is_a?(String)
+      js << if @name.is_a?(String)
+        @name
+      elsif @computed
         "[#{@name.to_js}]"
       else
-        @name
+        @name.to_js
       end
     end
     js << "(" << @args.map(&:to_js).join(', ') << ") "

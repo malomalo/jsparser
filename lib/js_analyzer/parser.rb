@@ -1,123 +1,23 @@
+# frozen_string_literal: true
+
+require 'set'
+
+# Parses JavaScript into JSAnalyzer::Node trees, reading tokens from a
+# JSAnalyzer::Tokenizer. Positions (the ranges on declarations and
+# references) are byte offsets into the source.
 class JSAnalyzer::Parser
-  
-  include StreamParser
-  
-  attr_accessor :scope # TODO: remove
-  
-  # StreamParser util updates
-  def scan_until_eol
-    scan_until(/[^\n\f]+(\n+|\f|\z)/)
-    match
-  end
-  
-  # Positions (@index, and the ranges on declarations and references) are
-  # byte offsets into the source, as in StreamParser, so matching never has
-  # to count characters from the start of the source.
 
-  def peek(n=1)
-    if n.is_a?(Regexp)
-      skip_comments if skips_comments?(n)
-      @source.byteindex(anchored(n), @index) && $~
-    else
-      super
-    end
+  attr_reader :scope
+
+  def self.parse(source, **options)
+    new(source).parse(**options)
   end
 
-  # Matches r at the current position and moves past it. Unlike
-  # StreamParser's version this only tries the current position (instead of
-  # searching the rest of the source), and skips comments first when r starts
-  # with optional whitespace.
-  def gobble(r)
-    r = LITERAL[r] if r.is_a?(::String)
-    skip_comments if skips_comments?(r)
-    return unless @source.byteindex(anchored(r), @index)
-
-    m = $~
-    @match = m.to_s
-    @old_index = @index
-    @index = m.byteend(0)
-    m
+  def initialize(source)
+    @source = source
+    @tokens = JSAnalyzer::Tokenizer.new(source)
   end
 
-  # The `|(?!)` alternative never matches; it stops Onigmo from first
-  # searching the rest of the source for a literal every match needs (here
-  # the `/`), which made each attempt cost the distance to the next one
-  COMMENT = /\G(?:\p{Space}*(?:\/\/[^\n]*|\/\*.*?\*\/)|(?!))/m
-
-  # Comments can appear anywhere whitespace can, so patterns that allow
-  # leading whitespace skip comments too
-  SKIPS_COMMENTS = {}.compare_by_identity
-
-  def skips_comments?(r)
-    SKIPS_COMMENTS.fetch(r) { SKIPS_COMMENTS[r] = r.source.start_with?('\p{Space}') }
-  end
-
-  # The first byte of whitespace or a comment
-  COMMENT_START_BYTES = [9, 10, 11, 12, 13, 32, '/'.ord].freeze
-
-  def skip_comments
-    # Most of the time the next character is neither, so don't run the regex
-    while COMMENT_START_BYTES.include?(@source.getbyte(@index)) && @source.byteindex(COMMENT, @index)
-      @index = $~.byteend(0)
-    end
-  end
-
-  # Patterns are regex literals compiled once (with /o where they
-  # interpolate), so the anchored versions are cached by the pattern itself.
-  # `|(?!)` never matches; see COMMENT.
-  ANCHORED = {}.compare_by_identity
-
-  def anchored(r)
-    ANCHORED[r] ||= Regexp.new("\\G(?:#{r.source}|(?!))", r.options)
-  end
-
-  # Regexes matching a literal string, as in gobble("${")
-  LITERAL = Hash.new { |cache, string| cache[string] = Regexp.new(Regexp.escape(string)) }
-  
-  # Reads a string literal's contents up to the closing quote_char, keeping
-  # escape sequences as written. (StreamParser's version removes the
-  # backslashes, so `"a\"b"` would print back as `"a"b"`.)
-  QUOTED = Hash.new do |cache, quote_char|
-    q = Regexp.escape(quote_char)
-    cache[quote_char] = /((?:[^#{q}\\\r\n]|\\.)*)#{q}/m
-  end
-
-  def quoted_value(quote_char = '"', _escape_chars = nil)
-    m = gobble(QUOTED[quote_char])
-    raise syntax_error("unterminated string") unless m
-    m[1]
-  end
-
-  # A JSAnalyzer::SyntaxError for the current position, with the line and
-  # column and the source around it
-  def syntax_error(message)
-    before = @source.byteslice(0, [@index, @source.bytesize].min)
-    after = @source.byteslice(before.bytesize..)
-    line = before.count("\n") + 1
-    line_before = before[((before.rindex("\n") || -1) + 1)..]
-    line_after = after[/\A[^\n]*/]
-    column = line_before.size + 1
-
-    # Show at most 80 characters either side, so minified files stay readable
-    shown_before = line_before[-80..] || line_before
-    JSAnalyzer::SyntaxError.new(
-      "#{message} at #{line}:#{column}\n  #{shown_before}#{line_after[0, 80]}\n  #{' ' * shown_before.size}^"
-    )
-  end
-
-  def gobble!(r)
-    x = gobble(r)
-    raise syntax_error("expected #{r.is_a?(Regexp) ? r.source : r.inspect}") unless x
-    x
-  end
-  
-  # DSL helpers
-  # def p(pattern, precedence: 0)
-  #   @patterns.rindex { |ps| ps[0] }
-  #   @patterns << [precedence, pattern]
-    
-  # end
-  
   ASSIGNMENT_OPERATORS = %w(= += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=)
 
   # Binding power of binary operators, higher binds tighter. See
@@ -141,47 +41,122 @@ class JSAnalyzer::Parser
   PREFIX_PRECEDENCE = 15
   RIGHT_ASSOCIATIVE = ASSIGNMENT_OPERATORS + %w(**)
 
-  BINARY_OPERATORS = PRECEDENCE.keys.grep_v(/\A(\?|[a-z]+)\z/)
-  UNARY_OPERATORS = %w(++ --)
-  OPERATORS = (UNARY_OPERATORS+BINARY_OPERATORS).sort_by(&:length).reverse
-  OPERATOR_REGEX = Regexp.union(OPERATORS)
+  ACCESSORS = %w(get set).freeze
+  IMPORT_ATTRIBUTE_KEYWORDS = %w(with assert).freeze
+  THIS_OR_SUPER = %w(this super).freeze
+  FOR_IN_OF = %w(in of).freeze
+  SWITCH_CASES = %w(case default).freeze
 
-  WHITESPACE = /\p{Space}+/
-  IDENTIFIER = /[\p{Alpha}_\$][\p{Alpha}_\$\d]*/
-  NUMBER = /0[xX][\da-fA-F_]+n?|0[oO][0-7_]+n?|0[bB][01_]+n?|(?:\d[\d_]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?n?/
-  NUMBER_TOKEN = /\A(?:#{NUMBER})\z/o
-  
+  # Keywords that start a statement, so after a complete expression they
+  # start the next one
+  STATEMENT_KEYWORDS = Set.new(%w(break class const continue debugger do export for function if import let return switch throw try var while with)).freeze
+
+  # Things that can be called: f(), a.b(), a[b](), f()(), (f)(), new A()(),
+  # tag`x`(), import(), super()
+  CALLABLE = [
+    JSAnalyzer::Node::Method, JSAnalyzer::Node::VariableReference,
+    JSAnalyzer::Node::DotAccessor, JSAnalyzer::Node::BracketAccessor,
+    JSAnalyzer::Node::FunctionCall, JSAnalyzer::Node::Group,
+    JSAnalyzer::Node::Instantiation, JSAnalyzer::Node::TaggedTemplate,
+    JSAnalyzer::Node::Keyword
+  ].freeze
+
   def parse(source_type: :script)
     @scope = JSAnalyzer::Node::Program.new
-    gobble(/#![^\n]*/) # hashbang, e.g. #!/usr/bin/env node
     @scope.strict = source_type == :module || use_strict?
 
     parse_statement_list.each { @scope << it }
-    gobble(WHITESPACE)
-    raise syntax_error("unexpected #{peek(1).inspect}") unless eos?
+    raise syntax_error("unexpected #{peek.value.inspect}") unless peek.eof?
 
     @scope.source = @source
     @scope.close!
     @scope
   end
 
-  STATEMENT_LIST_END = /\p{Space}*(\}|\z)/
+  # Tokens
+
+  def peek(regex: false)
+    @tokens.peek(regex: regex)
+  end
+
+  def advance(regex: false)
+    @tokens.next(regex: regex)
+  end
+
+  def unread(token)
+    @tokens.unread(token)
+  end
+
+  # Consumes the next token if it's the punctuator `value`
+  def accept(value)
+    advance if peek.punctuator?(value)
+  end
+
+  # Consumes the next token if it's the name (keyword) `value`
+  def accept_name(value)
+    advance if peek.name?(value)
+  end
+
+  # Consumes the next token if it's one of the names
+  def accept_name_in(values)
+    advance if peek.name_in?(values)
+  end
+
+  def at?(value)
+    peek.punctuator?(value)
+  end
+
+  def expect(value)
+    accept(value) || raise(syntax_error("expected #{value.inspect}"))
+  end
+
+  # Consumes a name, or with value, that name
+  def expect_name(value = nil)
+    token = peek
+    return advance if value ? token.name?(value) : token.name?
+    raise syntax_error("expected #{value ? value.inspect : 'a name'}")
+  end
+
+  def expect_string
+    token = peek
+    raise syntax_error("expected a string") unless token.type == :string
+    string_node(advance)
+  end
+
+  def string_node(token)
+    JSAnalyzer::Node::String.new(token.value[1...-1], token.value[0])
+  end
+
+  def syntax_error(message, token = peek)
+    @tokens.syntax_error(message, token.start)
+  end
+
+  # Whether the last token consumed was a `;`. Statements consume the `;` that
+  # ends them, so the clauses of a for loop check this before expecting one.
+  def terminated?
+    @tokens.last&.punctuator?(';')
+  end
 
   # Whether a "use strict" directive is next, as at the start of a program or
   # function body
   def use_strict?
-    !!peek(/\p{Space}*(["'])use strict\1/)
+    token = peek
+    token.type == :string && token.value[1...-1] == 'use strict'
   end
 
-  # Parses statements until `until` matches (by default a `}` or the end of
-  # the source), without consuming it
-  def parse_statement_list(until_pattern = STATEMENT_LIST_END)
+  # Statements
+
+  # Parses statements until a `}`, the end of the source, or one of
+  # stop_names (`case` and `default` in a switch), without consuming it
+  def parse_statement_list(stop_names = nil)
     statements = []
-    until peek(until_pattern)
-      start = @index
+    loop do
+      token = peek(regex: true)
+      break if token.eof? || token.punctuator?('}') || (stop_names && token.name_in?(stop_names))
+
       st = statement_list_item
       statements << st if st
-      raise syntax_error("unexpected #{peek(1).inspect}") if @index == start
+      raise syntax_error("unexpected #{token.value.inspect}", token) if peek(regex: true).start == token.start
     end
     statements
   end
@@ -189,15 +164,20 @@ class JSAnalyzer::Parser
   # A statement where one may begin: here `{` starts a block rather than an
   # object, `;` is an empty statement (returns nil), and `name:` is a label
   def statement_list_item
-    if gobble(/\p{Space}*\{/)
+    token = peek(regex: true)
+    if token.punctuator?('{')
+      advance
       statements, scope = with_scope(:block) { parse_statement_list }
-      gobble!(/\p{Space}*\}/)
+      expect('}')
       JSAnalyzer::Node::Block.new(statements).tap { it.scope = scope }
-    elsif gobble(/\p{Space}*;/)
+    elsif token.punctuator?(';')
+      advance
       nil
-    elsif label = gobble(/\p{Space}*(#{IDENTIFIER})\p{Space}*:(?!:)/o)&.[](1)
-      JSAnalyzer::Node::LabeledStatement.new(label, statement_list_item)
+    elsif token.name? && (advance; at?(':'))
+      advance
+      JSAnalyzer::Node::LabeledStatement.new(token.value, statement_list_item)
     else
+      unread(token) if token.name?
       statement(top: true)
     end
   end
@@ -205,10 +185,33 @@ class JSAnalyzer::Parser
   # Parses a required `{ ... }` block, in a new scope, returning its
   # statements
   def parse_block
-    gobble!(/\p{Space}*\{/)
+    expect('{')
     statements, _ = with_scope(:block) { parse_statement_list }
-    gobble!(/\p{Space}*\}/)
+    expect('}')
     statements
+  end
+
+  # Parses the body of an if, for, etc.: either a `{ ... }` block or a single
+  # statement. Returns an array of statements.
+  def parse_body
+    at?('{') ? parse_block : [statement_list_item].compact
+  end
+
+  # Parses `( expression )`, as in `if (...)`
+  def parse_condition
+    expect('(')
+    condition = statement
+    expect(')')
+    condition
+  end
+
+  # Whether the statement ends here, for keywords like `return` whose value
+  # must start on the same line: a `;`, `}`, the end of the source, or a new
+  # line (automatic semicolon insertion). Consumes a `;`.
+  def statement_ends?
+    token = peek(regex: true)
+    return !!advance if token.punctuator?(';')
+    token.newline_before || token.punctuator?('}') || token.eof?
   end
 
   # Runs the block with a new scope of `kind` as the current scope. Returns
@@ -222,11 +225,6 @@ class JSAnalyzer::Parser
       scope.close!
       @scope = scope.parent_scope
     end
-  end
-
-  # The source range of a match's group
-  def group_range(match_data, group = 1)
-    match_data.bytebegin(group)...match_data.byteend(group)
   end
 
   # Arrow function parameters, which are parsed as an expression until the
@@ -269,493 +267,6 @@ class JSAnalyzer::Parser
       node
     end
   end
-  
-  def parse_object
-    obj = JSAnalyzer::Node::Object.new
-    
-    while true
-      gobble(WHITESPACE)
-      gob = gobble(/(\}|\[|\"|\'|#{NUMBER}|#{IDENTIFIER}|\.\.\.|\/|\*)/o)
-      key_range = group_range(gob, 0)
-
-      case gob[0]
-      when "}"
-        return obj
-      when "["
-        key = statement
-        gobble!(/\p{Space}*\]\p{Space}*/)
-        case gobble(/\p{Space}*(\:|\()\p{Space}*/)&.[](1)
-        when ':'
-          obj.add(key, expression)
-          gobble(/\p{Space}*,/)
-        when '('
-          obj.shorthand(parse_function(key, false, false, :class))
-          gobble(/\p{Space}*,/)
-        else
-          parse_scope([JSAnalyzer::Node::Array.new([key])])
-        end
-
-      when '"', "'"
-        quote = match
-        key = JSAnalyzer::Node::String.new(quoted_value(quote), quote)
-        return parse_scope([key]) unless gobble(/\p{Space}*:\p{Space}*/)
-        obj.add(key, expression)
-        gobble(/\p{Space}*,/)
-      when '...'
-        obj.spread(expression)
-        gobble(/\p{Space}*,/)
-      when "/"
-        case peek(1)
-        when "/"
-          scan_until_eol
-        when '*'
-          scan_until(/\*\//)
-        end
-      when "*"
-        key = gobble!(/\p{Space}*(\[|#{IDENTIFIER})/o)&.[](1)
-        
-        if key == '['
-          key = statement
-          gobble!(/\p{Space}*\]\p{Space}*/)
-        end
-        
-        gobble!(/\p{Space}*\(/)
-        obj.shorthand(parse_function(key, false, true, :class))
-        gobble(/\p{Space}*,/)
-      when 'async'
-        # `async` as an ordinary key: { async: true }, { async() {} }, { async }
-        unless peek(/\p{Space}*(\*|\[|#{IDENTIFIER})/o)
-          if gobble(/\p{Space}*:/)
-            obj.add("async", expression)
-          elsif gobble(/\p{Space}*\(/)
-            obj.shorthand(parse_function("async", false, false, :class))
-          else
-            obj.shorthand(@scope.var("async", range: key_range))
-          end
-          gobble(/\p{Space}*,/)
-          next
-        end
-
-        key = gobble!(/\p{Space}*(\*|\[|#{IDENTIFIER})/o)&.[](1)
-        if key == '*'
-          generator = true
-          key = gobble!(/\p{Space}*(\[|#{IDENTIFIER})/o)&.[](1)
-        end
-        
-        if key == '['
-          key = statement
-          gobble!(/\p{Space}*\]\p{Space}*/)
-        end
-
-        gobble!(/\p{Space}*\(/)
-        obj.shorthand(parse_function(key, true, generator, :class))
-        gobble(/\p{Space}*,/)
-      when NUMBER_TOKEN
-        key = match
-        return parse_scope([key]) unless gobble(/\p{Space}*:\p{Space}*/)
-        obj.add(key, expression)
-        gobble(/\p{Space}*,/)
-      when IDENTIFIER
-        key = match
-
-        # Getter or setter: `get name() {}`, `set [expr](v) {}`
-        if (key == 'get' || key == 'set') && (name = gobble(/\p{Space}+(#{IDENTIFIER}|#{NUMBER})|\p{Space}*(\[)/o))
-          name = name[1] || name[2]
-          if name == '['
-            name = statement
-            gobble!(/\p{Space}*\]/)
-          end
-          gobble!(/\p{Space}*\(/)
-          accessor = key == 'get' ? JSAnalyzer::Node::Class::Getter : JSAnalyzer::Node::Class::Setter
-          obj.shorthand(accessor.new(parse_function(name, false, false, :class)))
-          gobble(/\p{Space}*,/)
-          next
-        end
-
-        if peek(/\p{Space}*\}/)
-          # Shorthand property as the last entry
-          obj.shorthand(@scope.var(key, range: key_range))
-          next
-        end
-
-        if gobble(/\p{Space}*=(?![=>])/)
-          # `{ key = value }`, only valid as a destructuring pattern
-          obj.add_default(@scope.var(key, range: key_range), expression)
-          gobble(/\p{Space}*,/)
-          next
-        end
-
-        return parse_scope([key]) unless gob = gobble(/\p{Space}*([:,\(])\p{Space}*/)
-
-        case gob[1]
-        when ","
-          obj.shorthand(@scope.var(key, range: key_range))
-        when "("
-          obj.shorthand(parse_function(key, false, false, :class))
-          gobble(/\p{Space}*,/)
-        else
-          obj.add(key, expression)
-          gobble(/\p{Space}*,/)
-        end
-
-      else
-        # TODO: unhandled object member
-      end
-    end
-  end
-  
-  # as_expression: a function expression, which (unlike a declaration) is part
-  # of the surrounding expression and so doesn't consume a following `;`
-  def parse_function(name, async, generator, type, as_expression: false, name_range: nil)
-    # A function's name is a variable; a method's is a property name
-    declare = (as_expression ? :inner : :outer) if type == :function
-    fn = JSAnalyzer::Node::Method.new(name: name, async: async, scope: @scope, generator: generator, type: type,
-                                      declare: declare, name_range: name_range)
-
-    # Parse parameters, in the function's scope: names, rest (...args),
-    # defaults (a = 1) and destructuring patterns ({ a, b }, [a, b])
-    @scope = fn.scope
-    begin
-      until gobble(/\p{Space}*\)/)
-        start = @index
-        rest = gobble(/\p{Space}*\.\.\./)
-        param = parse_binding_target('param')
-        if gobble(/\p{Space}*=(?![=>])/)
-          param = JSAnalyzer::Node::BinaryOperator.new(left: param, operation: '=', right: expression)
-        end
-        fn.args << (rest ? JSAnalyzer::Node::SpreadOperator.new(param) : param)
-        gobble(/\p{Space}*,/)
-        raise syntax_error("unexpected #{peek(1).inspect}") if @index == start
-      end
-    ensure
-      @scope = fn.scope.parent_scope
-    end
-
-    gobble!(/\p{Space}*\{/)
-    
-    parse_function_body(fn, true, as_expression)
-    
-    fn
-  end
-  
-  def parse_function_body(fn, brackets = true, as_expression = false)
-    unless fn.simple_parameters?
-      # With defaults, patterns or rest parameters, the parameters are in a
-      # scope of their own and the body's declarations in another, so a
-      # default can't see a `var` in the body
-      fn.body_scope = JSAnalyzer::Node::Scope.new(scope: fn.scope, kind: :function_body)
-    end
-
-    if brackets && use_strict?
-      fn.scope.strict = true
-      fn.body_scope.strict = true
-    end
-
-    begin
-      @scope = fn.body_scope
-      if brackets
-        fn.body.concat(parse_statement_list)
-      else
-        # Arrow function with an expression body
-        fn.expression_body = true
-        fn.body << expression
-      end
-    ensure
-      fn.body_scope.close! unless fn.body_scope.equal?(fn.scope)
-      fn.scope.close!
-      @scope = fn.scope.parent_scope
-    end
-    gobble!(/\p{Space}*\}/) if brackets
-    # An expression is ended by the statement it's in
-    gobble!(/\p{Space}*;?/) unless as_expression || fn.type == :arrow
-  end
-  
-  def parse_scope(statements=[])
-    @scope = JSAnalyzer::Node::Scope.new(scope: @scope, statements: statements)
-    
-  ensure
-    @scope.close!
-    @scope = @scope.parent_scope
-  end
-  
-  def parse_array
-    array = JSAnalyzer::Node::Array.new
-    until gobble(/\p{Space}*\]/)
-      if gobble(/\p{Space}*,/)
-        array.members << nil # a hole, as in [1, , 2]
-        next
-      end
-
-      array.members << expression
-      next if gobble(/\p{Space}*,/)
-      gobble!(/\p{Space}*\]/)
-      break
-    end
-    array
-  end
-  
-  def parse_class(expression: false)
-    m = gobble(/\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)
-    name = m && [m[1], group_range(m)]
-
-    has_extends = if name&.first == 'extends'
-      name = nil
-      true
-    else
-      !!gobble(/\p{Space}+extends(?![\p{Alpha}_\$\d])/)
-    end
-    # extends takes any member, call or new expression (B.C, mixin(A, B), ...),
-    # parsed here so its references are in the enclosing scope
-    extends = statement(min_prec: PREFIX_PRECEDENCE) if has_extends
-    gobble!(/\p{Space}*\{/)
-    klass = JSAnalyzer::Node::Class.new(scope: @scope, name: name, extends: extends, expression: expression)
-
-    begin
-      @scope = klass.scope
-      while part = parse_class_part
-        klass.body << part
-      end
-    ensure
-      klass.scope.close!
-      @scope = klass.scope.parent_scope
-    end
-
-    gobble!(/\p{Space}*\}\p{Space}*;?/)
-    klass
-  end
-  
-  def parse_class_part
-    identifier = gobble(/\p{Space}*(\/|\*|\[|\{|\#?#{IDENTIFIER})/o)&.[](1)
-    
-    # Skip comments
-    while identifier == "/"
-      case peek(1)
-
-      when "/"
-        scan_until_eol
-      when '*'
-        scan_until(/\*\//)
-      end
-      identifier = gobble(/\p{Space}*(\/|\*|\[|\{|\#?#{IDENTIFIER})/o)&.[](1)
-    end
-    
-    return if identifier.nil?
-
-    # static, get, set and async are member names when nothing follows them,
-    # e.g. `get(key) {}` or `static = 1`
-    if %w(static get set async).include?(identifier) && peek(/\p{Space}*[(=;}]|[ \t]*\n/)
-      return parse_class_member(identifier, false, false)
-    end
-
-    member = case identifier
-    when "static"
-      return parse_class_part.tap { |p| p.static = true }
-    when "get"
-      JSAnalyzer::Node::Class::Getter.new(parse_class_part)
-    when "set"
-      JSAnalyzer::Node::Class::Setter.new(parse_class_part)
-    when "{"
-      block = JSAnalyzer::Node::Class::InitializationBlock.new(scope: @scope)
-      begin
-        @scope = block
-        parse_statement_list.each { block << it }
-      ensure
-        block.close!
-        @scope = block.parent_scope
-      end
-      gobble!(/\p{Space}*\}\p{Space}*;?/)
-      block
-    else
-      if identifier == 'async'
-        async = true
-        identifier = gobble!(/\p{Space}*(\*|\[|\#?#{IDENTIFIER})/o)&.[](1)
-      end
-      
-      if identifier == '*'
-        generator = true
-        identifier = gobble!(/\p{Space}*(\[|\#?#{IDENTIFIER})/o)&.[](1)
-      end
-      
-      if identifier == '['
-        identifier = statement
-        gobble!(/\p{Space}*\]\p{Space}*/)
-      end
-
-      return parse_class_member(identifier, async, generator)
-    end
-    JSAnalyzer::Node::Class::Field.new(member)
-  end
-
-  # A method or field named `name`, after its name
-  def parse_class_member(name, async, generator)
-    case gobble(/\p{Space}*(\(|=|;)/)&.[](1)
-    when "("
-      JSAnalyzer::Node::Class::Field.new(parse_function(name, async, generator, :class))
-    when "="
-      JSAnalyzer::Node::Class::Field.new(name, statement)
-    else
-      # A field without an initializer, ended by `;` or a new line
-      JSAnalyzer::Node::Class::Field.new(name)
-    end
-  end
-  
-  # The target of a declaration or parameter: a name, or an object or array
-  # destructuring pattern. Names are declared as `kind` ("let", "param"...).
-  # Returns the VariableDeclaration or the pattern.
-  def parse_binding_target(kind)
-    if gobble(/\p{Space}*\{/)
-      parse_object_pattern(kind)
-    elsif gobble(/\p{Space}*\[/)
-      parse_array_pattern(kind)
-    else
-      m = gobble!(/\p{Space}*(#{IDENTIFIER})/o)
-      @scope.declare(kind, m[1], range: group_range(m))
-    end
-  end
-
-  # `{ a, b: c, d = 1, e: { f }, ...rest }`, after the `{`
-  def parse_object_pattern(kind)
-    pattern = JSAnalyzer::Node::DestructureObject.new
-    until gobble(/\p{Space}*\}/)
-      if gobble(/\p{Space}*\.\.\./)
-        pattern.add(parse_binding_target(kind), rest: true)
-      elsif (key = parse_pattern_key)
-        # A string, number or computed key: `'a-b': x`, `0: y`, `[k]: z`.
-        # Only a plain name can be used without `: target`.
-        gobble!(/\p{Space}*:/)
-        value = parse_binding_target(kind)
-        default = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
-        pattern.add(key[0], value, default: default, computed: key[1])
-      else
-        m = gobble!(/\p{Space}*(#{IDENTIFIER})/o)
-        if gobble(/\p{Space}*:/)
-          # `key: target`, where key is only a property name
-          key = m[1]
-          value = parse_binding_target(kind)
-        else
-          key = @scope.declare(kind, m[1], range: group_range(m))
-          value = nil
-        end
-        default = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
-        pattern.add(key, value, default: default)
-      end
-      next if gobble(/\p{Space}*,/)
-      gobble!(/\p{Space}*\}/)
-      break
-    end
-    pattern
-  end
-
-  # An object pattern key other than a plain name, as [key, computed]: a
-  # String node, a number (as written), or a computed key's expression.
-  # Returns nil if the next key is a name.
-  def parse_pattern_key
-    if (m = gobble(/\p{Space}*(["'])/))
-      quote = m[1]
-      [JSAnalyzer::Node::String.new(quoted_value(quote), quote), false]
-    elsif (m = gobble(/\p{Space}*(#{NUMBER})/o))
-      [m[1], false]
-    elsif gobble(/\p{Space}*\[/)
-      key = expression
-      gobble!(/\p{Space}*\]/)
-      [key, true]
-    end
-  end
-
-  # `[a, , b = 1, [c], ...rest]`, after the `[`
-  def parse_array_pattern(kind)
-    pattern = JSAnalyzer::Node::DestructureArray.new
-    until gobble(/\p{Space}*\]/)
-      if gobble(/\p{Space}*,/)
-        pattern.hole
-        next
-      end
-
-      rest = gobble(/\p{Space}*\.\.\./)
-      target = parse_binding_target(kind)
-      if rest
-        pattern.add(target, rest: true)
-      else
-        pattern.add(target, (expression if gobble(/\p{Space}*=(?![=>])/)))
-      end
-      next if gobble(/\p{Space}*,/)
-      gobble!(/\p{Space}*\]/)
-      break
-    end
-    pattern
-  end
-
-  def parse_args
-    args = []
-    while nibble = expression
-      args << nibble
-      gobble(/\p{Space}*,/)
-    end
-    gobble!(/\p{Space}*\)/)
-    args
-  end
-
-  # Parses the body of an if, for, etc.: either a `{ ... }` block or a single
-  # statement. Returns an array of statements.
-  def parse_body
-    if peek(/\p{Space}*\{/)
-      body = parse_block
-      gobble(/\p{Space}*;/)
-      body
-    else
-      [statement_list_item].compact
-    end
-  end
-
-  # Whether the statement ends here, for keywords like `return` whose value
-  # must start on the same line: a `;`, `}`, the end of the source, or a new
-  # line (automatic semicolon insertion). Consumes a `;`.
-  def statement_ends?
-    return true if gobble(/[ \t]*;/)
-    !!peek(/[ \t]*(\/\/[^\n]*)?(\n|\}|\z)/)
-  end
-
-  # `with { type: "json" }` (or the older `assert { ... }`) after the module
-  # specifier of an import or export. Returns [keyword, object] or nil.
-  def parse_import_attributes
-    return unless kw = gobble(/\p{Space}*(with|assert)(?![\p{Alpha}_\$\d])\p{Space}*\{/)&.[](1)
-    [kw, parse_object]
-  end
-
-  # Parses `( expression )`, as in `if (...)`
-  def parse_condition
-    gobble!(/\p{Space}*\(/)
-    condition = statement
-    gobble!(/\p{Space}*\)/)
-    condition
-  end
-
-  WHITESPACE_BYTES = [9, 10, 11, 12, 13, 32].freeze
-  SEMICOLON = ';'.ord
-
-  # Whether the last non-whitespace character consumed was a `;`. Nested
-  # statement calls consume the `;` that ends them, so callers that need a
-  # separator (e.g. the clauses of a for loop) check this before gobbling one.
-  def terminated?
-    i = @index - 1
-    i -= 1 while i >= 0 && WHITESPACE_BYTES.include?(@source.getbyte(i))
-    i >= 0 && @source.getbyte(i) == SEMICOLON
-  end
-
-  # Parses the right side of the binary operator `op` and pushes the
-  # BinaryOperator onto the stack. Returns false, consuming nothing, if `op`
-  # binds looser than min_prec and so belongs to the caller.
-  def binary_operator(stack, op, min_prec, no_in)
-    prec = PRECEDENCE.fetch(op)
-    return false if prec < min_prec || (no_in && op == 'in')
-
-    right = statement(min_prec: RIGHT_ASSOCIATIVE.include?(op) ? prec : prec + 1)
-    left = stack.pop
-    # `x = 1` only writes x; `x += 1` and `x ||= y` read it too
-    mark_written(left, read: op != '=') if ASSIGNMENT_OPERATORS.include?(op)
-    stack << JSAnalyzer::Node::BinaryOperator.new(left: left, operation: op, right: right)
-    true
-  end
 
   # Marks the variable references an assignment writes to: a reference, or
   # those in a destructuring pattern like `[a, { b }] = c`
@@ -786,6 +297,407 @@ class JSAnalyzer::Parser
     end
   end
 
+  # Object literals
+
+  # After the `{`
+  def parse_object
+    obj = JSAnalyzer::Node::Object.new
+
+    loop do
+      token = advance
+      if token.punctuator?('}')
+        return obj
+      elsif token.punctuator?('...')
+        obj.spread(expression)
+      elsif token.punctuator?('[')
+        key = statement
+        expect(']')
+        if accept(':')
+          obj.add(key, expression)
+        else
+          expect('(')
+          obj.shorthand(parse_function(key, false, false, :class))
+        end
+      elsif token.type == :string
+        key = string_node(token)
+        if accept('(')
+          obj.shorthand(parse_function(key, false, false, :class, computed: false))
+        else
+          expect(':')
+          obj.add(key, expression)
+        end
+      elsif token.type == :number
+        if accept('(')
+          obj.shorthand(parse_function(token.value, false, false, :class))
+        else
+          expect(':')
+          obj.add(token.value, expression)
+        end
+      elsif token.punctuator?('*')
+        key, computed = parse_property_key
+        expect('(')
+        obj.shorthand(parse_function(key, false, true, :class, computed: computed))
+      elsif token.name_in?(ACCESSORS) && property_key_next?
+        # Getter or setter: `get name() {}`, `set [expr](v) {}`
+        key, computed = parse_property_key
+        expect('(')
+        accessor = token.value == 'get' ? JSAnalyzer::Node::Class::Getter : JSAnalyzer::Node::Class::Setter
+        obj.shorthand(accessor.new(parse_function(key, false, false, :class, computed: computed)))
+      elsif token.name?('async') && (property_key_next? || at?('*')) && !peek.newline_before
+        generator = !!accept('*')
+        key, computed = parse_property_key
+        expect('(')
+        obj.shorthand(parse_function(key, true, generator, :class, computed: computed))
+      elsif token.name?
+        key = token.value
+        if at?('}') || accept(',')
+          obj.shorthand(@scope.var(key, range: token.range))
+          next
+        elsif accept('=')
+          # `{ key = value }`, only valid as a destructuring pattern
+          obj.add_default(@scope.var(key, range: token.range), expression)
+        elsif accept('(')
+          obj.shorthand(parse_function(key, false, false, :class))
+        else
+          expect(':')
+          obj.add(key, expression)
+        end
+      else
+        raise syntax_error("unexpected #{token.value.inspect}", token)
+      end
+
+      expect('}') && (return obj) unless accept(',')
+    end
+  end
+
+  # Whether a property key (as in `get key() {}`) is next
+  def property_key_next?
+    token = peek
+    token.name? || token.type == :string || token.type == :number || token.punctuator?('[')
+  end
+
+  # A method or accessor's key, as [key, computed]: a name or number as a
+  # String, a quoted key as a String node, or a computed key's expression
+  def parse_property_key
+    token = advance
+    case token.type
+    when :name, :number, :private_name
+      [token.value, false]
+    when :string
+      [string_node(token), false]
+    else
+      raise syntax_error("expected a property name", token) unless token.punctuator?('[')
+      key = statement
+      expect(']')
+      [key, true]
+    end
+  end
+
+  # Functions
+
+  # as_expression: a function expression, whose name is only visible inside
+  # it. computed: the name is a computed key, `[expr]() {}`
+  def parse_function(name, async, generator, type, as_expression: false, name_range: nil, computed: nil)
+    # A function's name is a variable; a method's is a property name
+    declare = (as_expression ? :inner : :outer) if type == :function
+    fn = JSAnalyzer::Node::Method.new(name: name, async: async, scope: @scope, generator: generator, type: type,
+                                      declare: declare, name_range: name_range, computed: computed)
+
+    # Parse parameters, in the function's scope: names, rest (...args),
+    # defaults (a = 1) and destructuring patterns ({ a, b }, [a, b])
+    @scope = fn.scope
+    begin
+      loop do
+        break if accept(')')
+        rest = accept('...')
+        param = parse_binding_target('param')
+        if accept('=')
+          param = JSAnalyzer::Node::BinaryOperator.new(left: param, operation: '=', right: expression)
+        end
+        fn.args << (rest ? JSAnalyzer::Node::SpreadOperator.new(param) : param)
+        next if accept(',')
+        expect(')')
+        break
+      end
+    ensure
+      @scope = fn.scope.parent_scope
+    end
+
+    expect('{')
+    parse_function_body(fn, true)
+    fn
+  end
+
+  def parse_function_body(fn, brackets = true)
+    unless fn.simple_parameters?
+      # With defaults, patterns or rest parameters, the parameters are in a
+      # scope of their own and the body's declarations in another, so a
+      # default can't see a `var` in the body
+      fn.body_scope = JSAnalyzer::Node::Scope.new(scope: fn.scope, kind: :function_body)
+    end
+
+    if brackets && use_strict?
+      fn.scope.strict = true
+      fn.body_scope.strict = true
+    end
+
+    begin
+      @scope = fn.body_scope
+      if brackets
+        fn.body.concat(parse_statement_list)
+      else
+        # Arrow function with an expression body
+        fn.expression_body = true
+        fn.body << expression
+      end
+    ensure
+      fn.body_scope.close! unless fn.body_scope.equal?(fn.scope)
+      fn.scope.close!
+      @scope = fn.scope.parent_scope
+    end
+    expect('}') if brackets
+  end
+
+  # After the `(` of a call or parenthesized expression
+  def parse_args
+    args = []
+    loop do
+      break if accept(')')
+      args << expression
+      next if accept(',')
+      expect(')')
+      break
+    end
+    args
+  end
+
+  # After the `[`
+  def parse_array
+    array = JSAnalyzer::Node::Array.new
+    loop do
+      break if accept(']')
+      if accept(',')
+        array.members << nil # a hole, as in [1, , 2]
+        next
+      end
+
+      array.members << expression
+      next if accept(',')
+      expect(']')
+      break
+    end
+    array
+  end
+
+  # Classes
+
+  # After `class`
+  def parse_class(expression: false)
+    token = peek
+    name = (token.name? && !token.name?('extends')) ? [advance.value, token.range] : nil
+
+    # extends takes any member, call or new expression (B.C, mixin(A, B), ...),
+    # parsed here so its references are in the enclosing scope
+    extends = statement(min_prec: PREFIX_PRECEDENCE) if accept_name('extends')
+    expect('{')
+    klass = JSAnalyzer::Node::Class.new(scope: @scope, name: name, extends: extends, expression: expression)
+
+    begin
+      @scope = klass.scope
+      until accept('}')
+        part = parse_class_part
+        klass.body << part if part
+      end
+    ensure
+      klass.scope.close!
+      @scope = klass.scope.parent_scope
+    end
+    klass
+  end
+
+  CLASS_MODIFIERS = %w(static get set async).freeze
+  CLASS_MEMBER_ENDS = ['(', '=', ';', '}'].freeze
+
+  def parse_class_part
+    token = advance
+    return if token.punctuator?(';')
+
+    # static, get, set and async are member names when nothing follows them,
+    # e.g. `get(key) {}` or `static = 1`
+    if token.name_in?(CLASS_MODIFIERS) && (peek.punctuator_in?(CLASS_MEMBER_ENDS) || peek.newline_before)
+      return parse_class_member(token.value, false, false)
+    end
+
+    member = if token.name?('static')
+      return parse_class_part.tap { |part| part.static = true }
+    elsif token.name?('get')
+      JSAnalyzer::Node::Class::Getter.new(parse_class_part)
+    elsif token.name?('set')
+      JSAnalyzer::Node::Class::Setter.new(parse_class_part)
+    elsif token.punctuator?('{')
+      block = JSAnalyzer::Node::Class::InitializationBlock.new(scope: @scope)
+      begin
+        @scope = block
+        parse_statement_list.each { block << it }
+      ensure
+        block.close!
+        @scope = block.parent_scope
+      end
+      expect('}')
+      block
+    else
+      async = token.name?('async')
+      token = advance if async
+      generator = token.punctuator?('*')
+      token = advance if generator
+      unread(token)
+      key, = parse_property_key
+      return parse_class_member(key, async, generator)
+    end
+    JSAnalyzer::Node::Class::Field.new(member)
+  end
+
+  # A method or field named `name`, after its name
+  def parse_class_member(name, async, generator)
+    if accept('(')
+      JSAnalyzer::Node::Class::Field.new(parse_function(name, async, generator, :class))
+    elsif accept('=')
+      JSAnalyzer::Node::Class::Field.new(name, statement)
+    else
+      # A field without an initializer, ended by `;` or a new line
+      accept(';')
+      JSAnalyzer::Node::Class::Field.new(name)
+    end
+  end
+
+  # Destructuring patterns
+
+  # The target of a declaration or parameter: a name, or an object or array
+  # destructuring pattern. Names are declared as `kind` ("let", "param"...).
+  # Returns the VariableDeclaration or the pattern.
+  def parse_binding_target(kind)
+    if accept('{')
+      parse_object_pattern(kind)
+    elsif accept('[')
+      parse_array_pattern(kind)
+    else
+      token = expect_name
+      @scope.declare(kind, token.value, range: token.range)
+    end
+  end
+
+  # `{ a, b: c, d = 1, e: { f }, ...rest }`, after the `{`
+  def parse_object_pattern(kind)
+    pattern = JSAnalyzer::Node::DestructureObject.new
+    loop do
+      break if accept('}')
+      if accept('...')
+        pattern.add(parse_binding_target(kind), rest: true)
+      elsif (key = parse_pattern_key)
+        # A string, number or computed key: `'a-b': x`, `0: y`, `[k]: z`.
+        # Only a plain name can be used without `: target`.
+        expect(':')
+        value = parse_binding_target(kind)
+        default = accept('=') ? expression : nil
+        pattern.add(key[0], value, default: default, computed: key[1])
+      else
+        token = expect_name
+        if accept(':')
+          # `key: target`, where key is only a property name
+          key = token.value
+          value = parse_binding_target(kind)
+        else
+          key = @scope.declare(kind, token.value, range: token.range)
+          value = nil
+        end
+        default = accept('=') ? expression : nil
+        pattern.add(key, value, default: default)
+      end
+      next if accept(',')
+      expect('}')
+      break
+    end
+    pattern
+  end
+
+  # An object pattern key other than a plain name, as [key, computed]: a
+  # String node, a number (as written), or a computed key's expression.
+  # Returns nil if the next key is a name.
+  def parse_pattern_key
+    token = peek
+    if token.type == :string
+      [string_node(advance), false]
+    elsif token.type == :number
+      [advance.value, false]
+    elsif accept('[')
+      key = expression
+      expect(']')
+      [key, true]
+    end
+  end
+
+  # `[a, , b = 1, [c], ...rest]`, after the `[`
+  def parse_array_pattern(kind)
+    pattern = JSAnalyzer::Node::DestructureArray.new
+    loop do
+      break if accept(']')
+      if accept(',')
+        pattern.hole
+        next
+      end
+
+      rest = accept('...')
+      target = parse_binding_target(kind)
+      if rest
+        pattern.add(target, rest: true)
+      else
+        pattern.add(target, (expression if accept('=')))
+      end
+      next if accept(',')
+      expect(']')
+      break
+    end
+    pattern
+  end
+
+  # `with { type: "json" }` (or the older `assert { ... }`) after the module
+  # specifier of an import or export. Returns [keyword, object] or nil.
+  def parse_import_attributes
+    return unless (keyword = accept_name_in(IMPORT_ATTRIBUTE_KEYWORDS))
+    expect('{')
+    [keyword.value, parse_object]
+  end
+
+  # After the opening backtick
+  def parse_template
+    node = JSAnalyzer::Node::InterpolatedString.new
+    loop do
+      text, kind = @tokens.template_chunk
+      node << text unless text.empty?
+      return node if kind == :end
+
+      node << statement
+      expect('}')
+    end
+  end
+
+  # Expressions
+
+  # Parses the right side of the binary operator `op` and pushes the
+  # BinaryOperator onto the stack. Returns false if `op` binds looser than
+  # min_prec and so belongs to the caller.
+  def binary_operator(stack, op, min_prec, no_in)
+    prec = PRECEDENCE.fetch(op)
+    return false if prec < min_prec || (no_in && op == 'in')
+
+    right = statement(min_prec: RIGHT_ASSOCIATIVE.include?(op) ? prec : prec + 1)
+    left = stack.pop
+    # `x = 1` only writes x; `x += 1` and `x ||= y` read it too
+    mark_written(left, read: op != '=') if ASSIGNMENT_OPERATORS.include?(op)
+    stack << JSAnalyzer::Node::BinaryOperator.new(left: left, operation: op, right: right)
+    true
+  end
+
   # A single expression that stops at a `,`, for argument lists, array items,
   # initializers, etc.
   def expression
@@ -797,545 +709,414 @@ class JSAnalyzer::Parser
   #           PRECEDENCE), or a `;`; used to parse operands
   # top:      this is the start of a statement, so `function` and `class` are
   #           declarations rather than expressions
-  STATEMENT_KEYWORDS = Set.new(%w(break class const continue debugger do export for function if import let return switch throw try var while with)).freeze
-  BINARY_OPERATOR_TOKENS = PRECEDENCE.keys.freeze
-
   def statement(no_in: false, min_prec: 0, top: false)
     stack = []
 
-    while true
-      newline = gobble(WHITESPACE)&.[](0)&.include?("\n")
+    loop do
+      # A regex can start where a value is expected
+      token = advance(regex: stack.empty?)
 
-      if gob = gobble(/(\;|=>|\.\.\.|#{OPERATOR_REGEX}|\?|!|~|#{NUMBER}|\.|\[|\{|\(|\"|\'|\`|\##{IDENTIFIER}|#{IDENTIFIER})/o)
-        token_range = group_range(gob, 0)
-        if !stack.empty? && STATEMENT_KEYWORDS.include?(match)
-          # A statement keyword after a complete expression starts the next
-          # statement
-          rewind(match.size)
-          return stack.pop
-        end
-
-        case match
-        when ";"
-          rewind(1) if min_prec > 0
-          return stack.pop
-        when "export"
-          return JSAnalyzer::Node::ExportStatement.parse(self)
-        when "import"
-          if peek(/\p{Space}*[(.]/)
-            # import(...) or import.meta
-            stack << JSAnalyzer::Node::Keyword.new(match)
-          else
-            return JSAnalyzer::Node::ImportStatement.parse(self)
-          end
-        when "async"
-          if !stack.empty?
-            rewind(match.size)
-            return stack.pop
-          elsif peek(/\p{Space}*(function(?![\p{Alpha}_\$\d])|\(|#{IDENTIFIER}\p{Space}*=>)/o)
-            # async applies only to the function or arrow function after it
-            fn = statement(min_prec: PREFIX_PRECEDENCE)
-            if fn.is_a?(JSAnalyzer::Node::Method)
-              fn.async = true
-              return fn if top && fn.type == :function
-              stack << fn
-            else
-              # A call to something named async, e.g. async(x)
-              args = fn.is_a?(JSAnalyzer::Node::Group) ? fn.expressions : [fn]
-              stack << JSAnalyzer::Node::FunctionCall.new(@scope.var("async", range: token_range), args)
-            end
-          else
-            stack << @scope.var(match, range: token_range)
-          end
-          
-        when "function"
-          generator = !!gobble(/\p{Space}*\*/)
-          m = gobble(/\p{Space}*(#{IDENTIFIER})/o)
-          gobble!(/\p{Space}*\(/)
-          
-          fn = parse_function(m&.[](1), false, generator, :function, as_expression: !top,
-                              name_range: m && group_range(m))
-          @scope.declare_block_function(fn.binding) if top && fn.binding
-          return fn if top
-          stack << fn
-        when "class"
-          klass = parse_class(expression: !top)
-          return klass if top
-          stack << klass
-        
-        when "new"
-          if gobble(/\p{Space}*\.\p{Space}*target(?![\p{Alpha}_\$\d])/)
-            stack << JSAnalyzer::Node::MetaProperty.new("new", "target")
+      case token.type
+      when :eof
+        unread(token)
+        return stack.pop
+      when :punctuator
+        result = handle_punctuator(token, stack, no_in, min_prec)
+      when :name
+        result = handle_name(token, stack, no_in, min_prec, top)
+      else
+        # A value after a complete expression starts the next statement
+        unless stack.empty?
+          if token.type == :template
+            stack << JSAnalyzer::Node::TaggedTemplate.new(stack.pop, parse_template)
             next
           end
+          unread(token)
+          return stack.pop
+        end
 
-          # new Callee(args), where Callee is a member expression and the
-          # argument list is optional
-          what = if gobble(/\p{Space}*\(/)
-            JSAnalyzer::Node::Group.new(parse_args)
-          else
-            m = gobble!(/\p{Space}*(#{IDENTIFIER})/o)
-            @scope.var(m[1], range: group_range(m))
-          end
-          while gob = gobble(/\p{Space}*(\.|\[)/)&.[](1)
-            what = if gob == "."
-              JSAnalyzer::Node::DotAccessor.new(object: what, key: gobble!(/\p{Space}*(#{IDENTIFIER})/o)[1])
-            else
-              JSAnalyzer::Node::BracketAccessor.new(what, statement).tap { gobble!(/\p{Space}*\]/) }
-            end
-          end
-          args = gobble(/\p{Space}*\(/) ? parse_args : []
-          stack << JSAnalyzer::Node::Instantiation.new(what, args)
-        when "..."
-          return JSAnalyzer::Node::SpreadOperator.new(expression)
-        when "{"
-          if stack.size > 0
-            rewind(1)
-            return stack.pop
-          else
-            stack << parse_object
-          end
-        when "("
-          if stack.last.is_a?(JSAnalyzer::Node::Method) && stack.last.type == :arrow
-            # An arrow function can't be called without parens around it
-            rewind(1)
-            return stack.pop
-          end
+        stack << case token.type
+        when :number then JSAnalyzer::Node::Number.new(token.value)
+        when :string then string_node(token)
+        when :template then parse_template
+        when :private_name then JSAnalyzer::Node::PrivateName.new(token.value) # #x in obj
+        when :regex
+          flags_at = token.value.rindex('/')
+          JSAnalyzer::Node::Regex.new(token.value[1...flags_at], token.value[(flags_at + 1)..])
+        end
+        next
+      end
 
-          case stack.last
-          when JSAnalyzer::Node::Method, JSAnalyzer::Node::VariableReference,
-               JSAnalyzer::Node::DotAccessor, JSAnalyzer::Node::BracketAccessor,
-               JSAnalyzer::Node::FunctionCall, JSAnalyzer::Node::Group,
-               JSAnalyzer::Node::Instantiation, JSAnalyzer::Node::TaggedTemplate,
-               JSAnalyzer::Node::Keyword # import(), super()
-            stack << JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args)
-          when nil
-            # Arrow function parameters or a parenthesized expression
-            mark = [@scope.references.size, @scope.children.size, @scope.pending.size]
-            args = parse_args
-            stack << (peek(/\p{Space}*=>/) ? ArrowParams.new(args, mark) : JSAnalyzer::Node::Group.new(args))
-          else
-            rewind(1)
-            return stack.pop
-          end
+      return result.value if result.is_a?(Return)
+    end
+  end
 
+  # What a token handler returns to end the expression
+  Return = Struct.new(:value)
 
-        when "?"
-          if gob = gobble(/\p{Space}*(\.\[|\.\(|\.)/)&.[](1)
-            stack << case gob
-            when '.('
-              JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args, optional_chaining: true)
-            when '.['
-              key = statement
-              gobble!(/\p{Space}*\]\p{Space}*/)
-              JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: key, optional_chaining: true)
-            when '.'
-              JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/\#?#{IDENTIFIER}/o)[0], optional_chaining: true)
-            end
-          else
-            if PRECEDENCE['?'] < min_prec
-              rewind(1)
-              return stack.pop
-            end
+  def end_expression(token, stack)
+    unread(token)
+    Return.new(stack.pop)
+  end
 
-            a = statement
-            gobble!(/\p{Space}*:/)
-            b = statement(min_prec: PRECEDENCE['='])
-            stack << JSAnalyzer::Node::Ternary.new(stack.pop, a, b)
-          end
-        when "."
-          if stack.empty?
-            raise syntax_error("unexpected #{match.inspect}")
-          else
-            stack << JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: gobble!(/\#?#{IDENTIFIER}/o)[0])
-          end
-        when "["
-          if newline && !stack.empty?
-            # Treat a `[` on a new line as a new statement. (JavaScript
-            # itself would continue the expression here.)
-            rewind(1)
-            return stack.pop
-          end
+  def handle_punctuator(token, stack, no_in, min_prec)
+    value = token.value
+    case value
+    when ';'
+      unread(token) if min_prec > 0
+      Return.new(stack.pop)
+    when '{'
+      return end_expression(token, stack) unless stack.empty?
+      stack << parse_object
+    when '('
+      last = stack.last
+      # An arrow function can't be called without parens around it
+      return end_expression(token, stack) if last.is_a?(JSAnalyzer::Node::Method) && last.type == :arrow
 
-          stack << if stack.empty?
-            parse_array
-          else
-            n = JSAnalyzer::Node::BracketAccessor.new(stack.pop, statement)
-            gobble!(/\p{Space}*\]/)
-            n
-          end
-        when NUMBER_TOKEN
-          stack << JSAnalyzer::Node::Number.new(match)
-        when /\A\#/
-          # A private name on its own, as in `#x in obj`
-          stack << JSAnalyzer::Node::PrivateName.new(match)
-        when '"', "'"
-          quote = match
-          stack << JSAnalyzer::Node::String.new(quoted_value(quote), quote)
-        when "`"
-          stack << if stack.empty?
-            tick_quoted_value
-          else
-            JSAnalyzer::Node::TaggedTemplate.new(stack.pop, tick_quoted_value)
-          end
-        when "!", "~", "delete", "typeof", "void", "await"
-          # Prefix operator
-          m = match
-          unless stack.empty?
-            # A prefix operator can't follow a value, so it starts the next
-            # statement (`a \n delete b`)
-            rewind(m.size)
-            return stack.pop
-          end
-          stack <<JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
-        when "++", "--"
-          # Prefix or postfix increment / decrement
-          m = match
-          if newline && !stack.empty?
-            # `a \n ++b` is `a; ++b`
-            rewind(m.size)
-            return stack.pop
-          end
+      if last.nil?
+        # Arrow function parameters or a parenthesized expression
+        mark = [@scope.references.size, @scope.children.size, @scope.pending.size]
+        args = parse_args
+        stack << (at?('=>') ? ArrowParams.new(args, mark) : JSAnalyzer::Node::Group.new(args))
+      elsif CALLABLE.any? { last.is_a?(it) }
+        stack << JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args)
+      else
+        end_expression(token, stack)
+      end
+    when '?.'
+      stack << if accept('(')
+        JSAnalyzer::Node::FunctionCall.new(stack.pop, parse_args, optional_chaining: true)
+      elsif accept('[')
+        key = statement
+        expect(']')
+        JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: key, optional_chaining: true)
+      else
+        JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: member_name, optional_chaining: true)
+      end
+    when '?'
+      return end_expression(token, stack) if PRECEDENCE['?'] < min_prec
 
-          prefix = stack.empty?
-          operand = prefix ? statement(min_prec: PREFIX_PRECEDENCE) : stack.pop
-          mark_written(operand, read: true) # x++ and ++x read and write x
-          stack << if prefix
-            JSAnalyzer::Node::PrefixOperator.new(m, operand)
-          else
-            JSAnalyzer::Node::UnaryOperator.new(operand, m)
-          end
-        when "+", "-"
-          # Prefix or Binary operator
-          m = match
-          if stack.empty?
-            stack << JSAnalyzer::Node::PrefixOperator.new(m, statement(min_prec: PREFIX_PRECEDENCE))
-          elsif !binary_operator(stack, m, min_prec, no_in)
-            rewind(m.size)
-            return stack.pop
-          end
-        when "/"
-          # Comment, regex, or division
-          case peek(1)
-          when "/"
-            match + scan_until_eol
-          when '*'
-            [match, scan_until(/\*\//)]
-          else
-            # A `/` after a value is division; anywhere else it starts a regex
-            if stack.empty?
-              stack << parse_regex
-            elsif !binary_operator(stack, "/", min_prec, no_in)
-              rewind(1)
-              return stack.pop
-            end
-          end
-        when '=>'
-          params = stack.pop
-          args, mark = case params
-          when ArrowParams
-            [params.args, params.mark]
-          when JSAnalyzer::Node::VariableReference # x => ...
-            [[params], [@scope.references.index { it.equal?(params) } || @scope.references.size,
-                        @scope.children.size,
-                        @scope.pending.index { it.equal?(params) } || @scope.pending.size]]
-          else
-            [Array(params), [@scope.references.size, @scope.children.size, @scope.pending.size]]
-          end
+      a = statement
+      expect(':')
+      b = statement(min_prec: PRECEDENCE['='])
+      stack << JSAnalyzer::Node::Ternary.new(stack.pop, a, b)
+    when '.'
+      raise syntax_error("unexpected \".\"", token) if stack.empty?
+      stack << JSAnalyzer::Node::DotAccessor.new(object: stack.pop, key: member_name)
+    when '['
+      stack << if stack.empty?
+        parse_array
+      else
+        JSAnalyzer::Node::BracketAccessor.new(stack.pop, statement).tap { expect(']') }
+      end
+    when '...'
+      Return.new(JSAnalyzer::Node::SpreadOperator.new(expression))
+    when '!', '~'
+      prefix_operator(token, stack)
+    when '++', '--'
+      # `a \n ++b` is `a; ++b`
+      return end_expression(token, stack) if token.newline_before && !stack.empty?
 
-          # The parameters were parsed in this scope; move what they declared
-          # and referenced into the arrow function's. That includes references
-          # passed up by scopes inside them that have already closed, such as
-          # a function in a default value.
-          references = @scope.references.slice!(mark[0]..) || []
-          children = @scope.children.slice!(mark[1]..) || []
-          pending = @scope.pending.slice!(mark[2]..) || []
-          fn = JSAnalyzer::Node::Method.new(scope: @scope, type: :arrow)
-          children.each { it.parent_scope = fn.scope; fn.scope.children << it }
-          bound = []
-          fn.args = args.map { bind_targets!(it, fn.scope, 'param', bound) }
-          references.each do |reference|
-            next if bound.any? { it.equal?(reference) }
-            reference.scope = fn.scope
-            fn.scope.references << reference
-          end
-          pending.each do |reference|
-            fn.scope.pending << reference unless bound.any? { it.equal?(reference) }
-          end
+      prefix = stack.empty?
+      operand = prefix ? statement(min_prec: PREFIX_PRECEDENCE) : stack.pop
+      mark_written(operand, read: true) # x++ and ++x read and write x
+      stack << if prefix
+        JSAnalyzer::Node::PrefixOperator.new(value, operand)
+      else
+        JSAnalyzer::Node::UnaryOperator.new(operand, value)
+      end
+    when '+', '-'
+      if stack.empty?
+        stack << JSAnalyzer::Node::PrefixOperator.new(value, statement(min_prec: PREFIX_PRECEDENCE))
+      elsif !binary_operator(stack, value, min_prec, no_in)
+        end_expression(token, stack)
+      end
+    when '=>'
+      arrow_function(stack)
+    when ','
+      # Comma operator, or the end of an item in a list
+      end_expression(token, stack) if stack.empty? || !binary_operator(stack, ',', min_prec, no_in)
+    else
+      if PRECEDENCE.key?(value) && !stack.empty?
+        # Binary operator, including assignment
+        end_expression(token, stack) unless binary_operator(stack, value, min_prec, no_in)
+      elsif PRECEDENCE.key?(value) && value != '/'
+        raise syntax_error("unexpected #{value.inspect}", token)
+      else
+        # `)`, `]`, `}`, `:` and the like end the expression
+        end_expression(token, stack)
+      end
+    end
+  end
 
-          parse_function_body(fn, !!gobble(/\p{Space}*\{/))
+  # A property name after `.` or `?.`, which may be a keyword or #private
+  def member_name
+    token = advance
+    raise syntax_error("expected a property name", token) unless token.name? || token.type == :private_name
+    token.value
+  end
+
+  def prefix_operator(token, stack)
+    # A prefix operator can't follow a value, so it starts the next statement
+    # (`a \n delete b`)
+    return end_expression(token, stack) unless stack.empty?
+    stack << JSAnalyzer::Node::PrefixOperator.new(token.value, statement(min_prec: PREFIX_PRECEDENCE))
+  end
+
+  def arrow_function(stack)
+    params = stack.pop
+    args, mark = case params
+    when ArrowParams
+      [params.args, params.mark]
+    when JSAnalyzer::Node::VariableReference # x => ...
+      [[params], [@scope.references.index { it.equal?(params) } || @scope.references.size,
+                  @scope.children.size,
+                  @scope.pending.index { it.equal?(params) } || @scope.pending.size]]
+    else
+      [Array(params), [@scope.references.size, @scope.children.size, @scope.pending.size]]
+    end
+
+    # The parameters were parsed in this scope; move what they declared and
+    # referenced into the arrow function's. That includes references passed
+    # up by scopes inside them that have already closed, such as a function
+    # in a default value.
+    references = @scope.references.slice!(mark[0]..) || []
+    children = @scope.children.slice!(mark[1]..) || []
+    pending = @scope.pending.slice!(mark[2]..) || []
+    fn = JSAnalyzer::Node::Method.new(scope: @scope, type: :arrow)
+    children.each { it.parent_scope = fn.scope; fn.scope.children << it }
+    bound = []
+    fn.args = args.map { bind_targets!(it, fn.scope, 'param', bound) }
+    references.each do |reference|
+      next if bound.any? { it.equal?(reference) }
+      reference.scope = fn.scope
+      fn.scope.references << reference
+    end
+    pending.each do |reference|
+      fn.scope.pending << reference unless bound.any? { it.equal?(reference) }
+    end
+
+    parse_function_body(fn, !!accept('{'))
+    stack << fn
+  end
+
+  def handle_name(token, stack, no_in, min_prec, top)
+    value = token.value
+    # A statement keyword after a complete expression starts the next
+    # statement
+    return end_expression(token, stack) if !stack.empty? && STATEMENT_KEYWORDS.include?(value)
+
+    case value
+    when 'in', 'instanceof'
+      return end_expression(token, stack) if stack.empty? || !binary_operator(stack, value, min_prec, no_in)
+    when 'export'
+      Return.new(JSAnalyzer::Node::ExportStatement.parse(self))
+    when 'import'
+      if at?('(') || at?('.')
+        # import(...) or import.meta
+        stack << JSAnalyzer::Node::Keyword.new(value)
+      else
+        Return.new(JSAnalyzer::Node::ImportStatement.parse(self))
+      end
+    when 'async'
+      return end_expression(token, stack) unless stack.empty?
+
+      if async_function_next?
+        # async applies only to the function or arrow function after it
+        fn = statement(min_prec: PREFIX_PRECEDENCE)
+        if fn.is_a?(JSAnalyzer::Node::Method)
+          fn.async = true
+          return Return.new(fn) if top && fn.type == :function
           stack << fn
-        when ","
-          # Comma operator, or the end of an item in a list
-          if stack.empty? || !binary_operator(stack, ",", min_prec, no_in)
-            rewind(1)
-            return stack.pop
-          end
-        when *BINARY_OPERATOR_TOKENS
-          # Binary operator, including assignment
-          m = match
-          if stack.empty? && m == '/='
-            # A regex starting with `=`, e.g. /=+/
-            rewind(1)
-            stack << parse_regex
-          elsif stack.empty?
-            raise syntax_error("unexpected #{match.inspect}")
-          elsif !binary_operator(stack, m, min_prec, no_in)
-            rewind(m.size)
-            return stack.pop
-          end
-        when "for"
-          # The head is in its own scope, for `for (let i ...)`
-          with_scope(:block) do
-            is_await = !!gobble(/\p{Space}*await(?![\p{Alpha}_\$\d])/) # for await (x of y)
-            gobble!(/\p{Space}*\(/)
-            initialization = statement(no_in: true)
-
-            if kind = gobble(/\p{Space}*(in|of)(?![\p{Alpha}_\$\d])/)&.[](1)
-              mark_written(initialization) # for (x of xs) assigns x
-              right = statement
-              gobble!(/\p{Space}*\)/)
-              return JSAnalyzer::Node::ForIn.new(initialization, kind, right, parse_body, await: is_await)
-            end
-
-            gobble!(/\p{Space}*;/) unless terminated?
-            condition = statement
-            gobble!(/\p{Space}*;/) unless terminated?
-            afterthought = statement
-            gobble!(/\p{Space}*\)/)
-            return JSAnalyzer::Node::ForLoop.new(initialization, condition, afterthought, parse_body)
-          end
-        when "var", "let", "const"
-          node = JSAnalyzer::Node::VariableStatement.new(match)
-          loop do
-            target = parse_binding_target(node.kind)
-            init = gobble(/\p{Space}*=(?![=>])/) ? expression : nil
-            node.add(target, init)
-            break unless gobble(/\p{Space}*,/)
-          end
-          gobble(/\p{Space}*;/) unless terminated?
-          return node
-        when "return"
-          return JSAnalyzer::Node::ReturnStatement.new(statement_ends? ? nil : statement)
-        when "yield"
-          delegate = !!gobble(/\p{Space}*\*/) # yield* iterable
-          return JSAnalyzer::Node::Yield.new(statement_ends? ? nil : statement, delegate: delegate)
-        when "with"
-          return JSAnalyzer::Node::With.new(parse_condition, parse_body)
-        when "debugger"
-          gobble(/\p{Space}*;/)
-          return JSAnalyzer::Node::DebuggerStatement.new
-        when "true", "false"
-          stack <<  JSAnalyzer::Node::Boolean.new(match == "true")
-        when "if"
-          node = JSAnalyzer::Node::If.new(parse_condition, parse_body)
-          while gobble(/\p{Space}*else(?![\p{Alpha}_\$\d])/)
-            if gobble(/\p{Space}*if(?![\p{Alpha}_\$\d])/)
-              node.else_if(parse_condition, parse_body)
-            else
-              node.else(parse_body)
-              break
-            end
-          end
-          return node
-        when "while"
-          return JSAnalyzer::Node::While.new(parse_condition, parse_body)
-        when "do"
-          body = parse_body
-          gobble!(/\p{Space}*while(?![\p{Alpha}_\$\d])/)
-          condition = parse_condition
-          gobble(/\p{Space}*;/)
-          return JSAnalyzer::Node::DoWhile.new(body, condition)
-        when "throw"
-          return JSAnalyzer::Node::ThrowStatement.new(statement)
-        when "try"
-          node = JSAnalyzer::Node::Try.new(parse_block)
-          if gobble(/\p{Space}*catch(?![\p{Alpha}_\$\d])/)
-            with_scope(:catch) do
-              if gobble(/\p{Space}*\(/)
-                node.param = parse_binding_target('catch')
-                gobble!(/\p{Space}*\)/)
-              end
-              node.handler = parse_block
-            end
-          end
-          if gobble(/\p{Space}*finally(?![\p{Alpha}_\$\d])/)
-            node.finalizer = parse_block
-          end
-          return node
-        when "switch"
-          node = JSAnalyzer::Node::Switch.new(parse_condition)
-          gobble!(/\p{Space}*\{/)
-          case_end = /\p{Space}*((case|default)(?![\p{Alpha}_\$\d])|\}|\z)/
-          with_scope(:block) do
-            while kind = gobble(/\p{Space}*(case|default)(?![\p{Alpha}_\$\d])/)&.[](1)
-              test = kind == "case" ? statement : nil
-              gobble!(/\p{Space}*:/)
-              node.cases << [test, parse_statement_list(case_end)]
-            end
-          end
-          gobble!(/\p{Space}*\}/)
-          return node
-        when "break", "continue"
-          keyword = match
-          label = gobble(/[ \t]+(#{IDENTIFIER})/o)&.[](1)
-          gobble(/\p{Space}*;/)
-          return JSAnalyzer::Node::JumpStatement.new(keyword, label)
-        when "this", "super", "null"
-          if stack.size > 0
-            rewind(match.size)
-            return stack.pop
-          end
-          stack << JSAnalyzer::Node::Keyword.new(match)
-        when IDENTIFIER
-          if stack.size > 0
-            rewind(match.size)
-            return stack.pop
-          else
-            stack << @scope.var(match, range: token_range)
-          end
         else
-          # TODO: unhandled token
+          # A call to something named async, e.g. async(x)
+          args = fn.is_a?(JSAnalyzer::Node::Group) ? fn.expressions : [fn]
+          stack << JSAnalyzer::Node::FunctionCall.new(@scope.var('async', range: token.range), args)
         end
       else
-        gobble(/\p{Space}*;?/)
-        if stack.size > 1
-          raise "stack issue: #{stack.map(&:to_js).join("; ")}"
-        end
-        return stack.pop
+        stack << @scope.var(value, range: token.range)
       end
+    when 'function'
+      generator = !!accept('*')
+      fn_name = peek.name? ? advance : nil
+      expect('(')
+      fn = parse_function(fn_name&.value, false, generator, :function, as_expression: !top, name_range: fn_name&.range)
+      @scope.declare_block_function(fn.binding) if top && fn.binding
+      return Return.new(fn) if top
+      stack << fn
+    when 'class'
+      klass = parse_class(expression: !top)
+      return Return.new(klass) if top
+      stack << klass
+    when 'new'
+      return end_expression(token, stack) unless stack.empty?
+      stack << parse_new
+    when 'delete', 'typeof', 'void', 'await'
+      prefix_operator(token, stack)
+    when 'var', 'let', 'const'
+      node = JSAnalyzer::Node::VariableStatement.new(value)
+      loop do
+        target = parse_binding_target(node.kind)
+        init = accept('=') ? expression : nil
+        node.add(target, init)
+        break unless accept(',')
+      end
+      accept(';')
+      Return.new(node)
+    when 'for'
+      Return.new(parse_for)
+    when 'return'
+      Return.new(JSAnalyzer::Node::ReturnStatement.new(statement_ends? ? nil : statement))
+    when 'yield'
+      delegate = !!accept('*') # yield* iterable
+      Return.new(JSAnalyzer::Node::Yield.new(statement_ends? ? nil : statement, delegate: delegate))
+    when 'with'
+      Return.new(JSAnalyzer::Node::With.new(parse_condition, parse_body))
+    when 'debugger'
+      accept(';')
+      Return.new(JSAnalyzer::Node::DebuggerStatement.new)
+    when 'if'
+      node = JSAnalyzer::Node::If.new(parse_condition, parse_body)
+      while accept_name('else')
+        if accept_name('if')
+          node.else_if(parse_condition, parse_body)
+        else
+          node.else(parse_body)
+          break
+        end
+      end
+      Return.new(node)
+    when 'while'
+      Return.new(JSAnalyzer::Node::While.new(parse_condition, parse_body))
+    when 'do'
+      body = parse_body
+      expect_name('while')
+      condition = parse_condition
+      accept(';')
+      Return.new(JSAnalyzer::Node::DoWhile.new(body, condition))
+    when 'throw'
+      Return.new(JSAnalyzer::Node::ThrowStatement.new(statement))
+    when 'try'
+      Return.new(parse_try)
+    when 'switch'
+      Return.new(parse_switch)
+    when 'break', 'continue'
+      label = peek
+      label = (label.name? && !label.newline_before) ? advance.value : nil
+      accept(';')
+      Return.new(JSAnalyzer::Node::JumpStatement.new(value, label))
+    when 'true', 'false'
+      return end_expression(token, stack) unless stack.empty?
+      stack << JSAnalyzer::Node::Boolean.new(value == 'true')
+    when 'this', 'super', 'null'
+      return end_expression(token, stack) unless stack.empty?
+      stack << JSAnalyzer::Node::Keyword.new(value)
+    else
+      return end_expression(token, stack) unless stack.empty?
+      stack << @scope.var(value, range: token.range)
     end
   end
 
-  OBJECT_KEY = /#{IDENTIFIER}|#{NUMBER}|"(\\"|(?!\\)[^"])+"/o
-  def continue_object(key)
-    obj = ['{', key]
-    obj << statement
-    
-    while true
-      gobble(WHITESPACE)
-    # puts ['continue_object', peek(1), obj].inspect
-      case peek(1)
-      when "}"
-        obj << gobble("}")[0]
+  # After `async`: whether a function (`async function`, `async (x) =>`,
+  # `async x =>`) follows rather than `async` being a name
+  def async_function_next?
+    token = peek
+    return false if token.newline_before
+    return true if token.name?('function') || token.punctuator?('(')
+    return false unless token.name?
+
+    advance
+    arrow = at?('=>')
+    unread(token)
+    arrow
+  end
+
+  # After `new`: `new.target`, or `new Callee(args)` where Callee is a member
+  # expression and the argument list is optional
+  def parse_new
+    if accept('.')
+      expect_name('target')
+      return JSAnalyzer::Node::MetaProperty.new('new', 'target')
+    end
+
+    callee = if accept('(')
+      JSAnalyzer::Node::Group.new(parse_args)
+    elsif (token = accept_name_in(THIS_OR_SUPER))
+      JSAnalyzer::Node::Keyword.new(token.value)
+    elsif accept_name('new')
+      parse_new
+    else
+      token = expect_name
+      @scope.var(token.value, range: token.range)
+    end
+
+    loop do
+      if accept('.')
+        callee = JSAnalyzer::Node::DotAccessor.new(object: callee, key: member_name)
+      elsif accept('[')
+        callee = JSAnalyzer::Node::BracketAccessor.new(callee, statement).tap { expect(']') }
+      else
         break
-      when ","
-        gobble(",")
-        object_key(obj)
-        # puts ['continue_object', peek(1), obj].inspect
-        # puts cursor
-        # puts match
-        obj << if peek(/\p{Space}*,/)
-          'NO KEY'
-        else
-          gobble(/\p{Space}*:/)
-          statement
-        end
-      when "/"
-        obj << if peek(1) == "/"
-          match + scan_until_eol
-        else
-          # error
-        end
       end
     end
 
-    
-    obj
+    JSAnalyzer::Node::Instantiation.new(callee, accept('(') ? parse_args : [])
   end
-  
-  def object_key(obj)
-    # puts "object_key"
 
-    while true
-      scan_until(/(\[|#{NUMBER}|\/\/|\"|\'|#{IDENTIFIER})/o)
+  # After `for`
+  def parse_for
+    # The head is in its own scope, for `for (let i ...)`
+    node, _ = with_scope(:block) do
+      is_await = !!accept_name('await') # for await (x of y)
+      expect('(')
+      initialization = statement(no_in: true)
 
-      case match
-      when NUMBER_TOKEN
-        return match
-      when "["
-        expr = statement
-        gobble(/\p{Space}*\]/)
-        return ["[", expr, "]"]
-      when "\""
-        return double_quoted_value
-      when "'"
-        return single_quoted_value
-      when IDENTIFIER
-        if gobble(/\p{Space}*\(/)
-        else
-          return match
+      if (kind = accept_name_in(FOR_IN_OF))
+        mark_written(initialization) # for (x of xs) assigns x
+        right = statement
+        expect(')')
+        next JSAnalyzer::Node::ForIn.new(initialization, kind.value, right, parse_body, await: is_await)
+      end
+
+      expect(';') unless terminated?
+      condition = statement
+      expect(';') unless terminated?
+      afterthought = statement
+      expect(')')
+      JSAnalyzer::Node::ForLoop.new(initialization, condition, afterthought, parse_body)
+    end
+    node
+  end
+
+  # After `try`
+  def parse_try
+    node = JSAnalyzer::Node::Try.new(parse_block)
+    if accept_name('catch')
+      with_scope(:catch) do
+        if accept('(')
+          node.param = parse_binding_target('catch')
+          expect(')')
         end
-      when "//"
-        obj << match + scan_until_eol
-      else
-        raise 'Syntax Error'
-      end
-      gobble(/\p{Space}*:/)
-    end
-  end
-
-  def block
-    block_statements = []
-    while peek(1) != "}"
-      block_statements << statement
-      gobble(WHITESPACE)
-    end
-    block_statements
-  end
-
-  # Parses the rest of a template literal after the opening backtick. Text is
-  # kept as written, including escapes.
-  def tick_quoted_value
-    ret_value = JSAnalyzer::Node::InterpolatedString.new
-
-    while true
-      text = gobble(/(?:[^`\\$]|\\.|\$(?!\{))*/m)[0]
-      ret_value << text unless text.empty?
-
-      if gobble("${")
-        ret_value << statement
-        gobble!(/\p{Space}*\}/)
-      elsif gobble("`")
-        return ret_value
-      else
-        raise syntax_error("unterminated template literal")
+        node.handler = parse_block
       end
     end
+    node.finalizer = parse_block if accept_name('finally')
+    node
   end
-  
-  def parse_regex
-    ret_value = String.new
 
-    regex_stack =  ['/']
-    while !regex_stack.empty?
-      scan_until(/[\/\[\]]/)
-      escaped = pre_match[-1] == "\\" && pre_match[-2] != "\\"
-      ret_value << pre_match
-      case match
-      when "["
-        regex_stack << '[' if !escaped && regex_stack.last != "["
-        ret_value << match
-      when "]"
-        regex_stack.pop if !escaped && regex_stack.last == "["
-        ret_value << match
-      when "/"
-        # From https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Regular_expressions/Character_class
-        # 
-        # The lexical grammar does a very rough parse of regex literals, so
-        # that it does not end the regex literal at a / character which appears
-        # within a character class. This means /[/]/ is valid without needing
-        # to escape the /.
-        if !escaped && regex_stack.last != "[" && regex_stack.pop != "/"
-          raise syntax_error("unexpected \"/\"")
-        else
-          ret_value << match
-        end
+  # After `switch`
+  def parse_switch
+    node = JSAnalyzer::Node::Switch.new(parse_condition)
+    expect('{')
+    with_scope(:block) do
+      while (kind = accept_name_in(SWITCH_CASES))
+        test = kind.value == 'case' ? statement : nil
+        expect(':')
+        node.cases << [test, parse_statement_list(SWITCH_CASES)]
       end
     end
-  
-    JSAnalyzer::Node::Regex.new(ret_value[..-2],gobble(/\p{Alpha}+/)&.[](0))
+    expect('}')
+    node
   end
-  
-  
+
 end

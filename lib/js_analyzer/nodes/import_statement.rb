@@ -65,55 +65,48 @@ class JSAnalyzer::Node::ImportStatement
     js
   end
   
+  # After `import`
   def self.parse(parser)
-    mode = nil
     imports = []
     from = nil
 
-    # Declares an imported name, from a match whose group 1 is the name
-    bind = ->(m) { parser.scope.declare('import', m[1], range: parser.group_range(m)) }
+    # Declares an imported name
+    bind = ->(token) { parser.scope.declare('import', token.value, range: token.range) }
 
-    m = parser.gobble!(/\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/o)
-    gobble = m[1]
-    while gobble
-      case gobble
-      when "*"
-        imports << Star.new(bind.(parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)))
-      when "{"
-        mode = :extract
-        imports << Extract.new
-      when "}"
-        mode = nil
-      when '"', "'"
-        value = JSAnalyzer::Node::String.new(parser.quoted_value(gobble), gobble)
-        if mode == :extract
-          imports.last.imports << As.new(value, bind.(parser.gobble!(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)))
-        else
-          from = value
-          break
-        end
-      when "/"
-        parser.gobble!(/\*/)
-        parser.scan_until(/\*\//)
-      when "from"
-        gob = parser.gobble!(/\p{Space}*(["'])/)[1]
-        from = JSAnalyzer::Node::String.new(parser.quoted_value(gob), gob)
-        break
-      when JSAnalyzer::Parser::IDENTIFIER
-        if mode == :extract
-          imports.last.imports << if gob = parser.gobble(/\p{Space}+as\p{Space}+(#{JSAnalyzer::Parser::IDENTIFIER})/o)
-            As.new(gobble, bind.(gob))
-          else
-            bind.(m)
+    if parser.peek.type == :string
+      from = parser.expect_string # import "module"
+    else
+      imports << Default.new(bind.(parser.advance)) if parser.peek.name? && !parser.peek.name?('from')
+
+      if imports.empty? || parser.accept(',')
+        if parser.accept('*')
+          parser.expect_name('as')
+          imports << Star.new(bind.(parser.expect_name))
+        elsif parser.accept('{')
+          extract = Extract.new
+          loop do
+            break if parser.accept('}')
+            name = parser.advance
+            imported = name.type == :string ? parser.string_node(name) : name.value
+            extract.imports << if parser.accept_name('as')
+              As.new(imported, bind.(parser.expect_name))
+            else
+              bind.(name)
+            end
+            next if parser.accept(',')
+            parser.expect('}')
+            break
           end
-        else
-          imports << Default.new(bind.(m))
+          imports << extract
         end
       end
-      m = parser.gobble!(/(?:\p{Space}*,)?\p{Space}*(\{|\}|'|"|\/|\*|#{JSAnalyzer::Parser::IDENTIFIER})/o)
-      gobble = m[1]
+
+      parser.expect_name('from')
+      from = parser.expect_string
     end
 
-    JSAnalyzer::Node::ImportStatement.new(imports: imports, from: from, attributes: parser.parse_import_attributes)
+    node = JSAnalyzer::Node::ImportStatement.new(imports: imports, from: from, attributes: parser.parse_import_attributes)
+    parser.accept(';')
+    node
   end
 end
